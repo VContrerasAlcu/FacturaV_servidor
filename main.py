@@ -26,9 +26,17 @@ from models import (
 from email_sender import send_verification_code, send_email
 from image_processor import process_image
 from excel_generator import generate_excel
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
 
 # Inicializar aplicación FastAPI
-app = FastAPI(title="FacturaV API", version="1.0.0")
+app = FastAPI(title="FacturaV API", version="1.0.0", lifespan=lifespan)
+
+
 
 # Configurar CORS
 app.add_middleware(
@@ -39,10 +47,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Inicializar base de datos al iniciar la aplicación
-@app.on_event("startup")
-async def startup_event():
-    init_db()
 
 # Rutas de autenticación
 @app.post("/api/login", response_model=Token)
@@ -86,7 +90,7 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks):
     store_verification_code(
         user_data.email, 
         code, 
-        user_data.dict(),
+        user_data.model_dump(),
         "register"
     )
     
