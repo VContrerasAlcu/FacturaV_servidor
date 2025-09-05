@@ -25,7 +25,7 @@ msrest==0.7.1
 numpy==1.26.4
 oauthlib==3.3.1
 openpyxl==3.1.2
-pandas==1.5.3
+pandas==2.2.3
 passlib==1.7.4
 psycopg2==2.9.10
 psycopg2-binary==2.9.7
@@ -53,4 +53,5 @@ urllib3==2.5.0
 uvicorn==0.24.0
 watchfiles==1.1.0
 websockets==15.0.1
+
 
