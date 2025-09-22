@@ -3,6 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from typing import List
 import re
+import os
+import uuid
+from datetime import datetime
 
 from config import settings
 from database import init_db, get_user_by_email, save_user, verify_password, hash_password
@@ -229,7 +232,7 @@ async def get_current_user_info(current_user: dict = Depends(get_current_user)):
             detail="Error interno del servidor"
         )
 
-# Ruta para procesar facturas
+# Ruta para procesar una sola factura (mantener para compatibilidad)
 @app.post("/api/upload-invoice", response_model=ProcessResponse)
 async def upload_invoice(
     background_tasks: BackgroundTasks,
@@ -278,10 +281,172 @@ async def upload_invoice(
             success=False
         )
 
+# NUEVO ENDPOINT para procesar múltiples facturas
+@app.post("/api/upload-invoices", response_model=ProcessResponse)
+async def upload_invoices(
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(...),
+    current_user: dict = Depends(get_current_user)
+):
+    try:
+        # Validar que se hayan subido archivos
+        if not files:
+            return ProcessResponse(
+                message="No se han subido archivos",
+                success=False
+            )
+        
+        # Validar número máximo de archivos
+        max_files = 10  # Puedes ajustar este límite
+        if len(files) > max_files:
+            return ProcessResponse(
+                message=f"Máximo {max_files} archivos permitidos",
+                success=False
+            )
+        
+        # Validar tipos de archivo
+        invalid_files = []
+        valid_files = []
+        
+        for file in files:
+            if file.content_type and file.content_type.startswith('image/'):
+                valid_files.append(file)
+            else:
+                invalid_files.append(file.filename)
+        
+        if invalid_files:
+            logger.warning(f"Archivos inválidos rechazados: {invalid_files}")
+        
+        if not valid_files:
+            return ProcessResponse(
+                message="Ninguno de los archivos es una imagen válida",
+                success=False
+            )
+        
+        # Procesar cada imagen
+        all_processed_data = []
+        processed_count = 0
+        failed_count = 0
+        processing_details = []
+
+        for i, file in enumerate(valid_files):
+            try:
+                logger.info(f"Procesando archivo {i+1}/{len(valid_files)}: {file.filename}")
+                
+                # Procesar imagen con Azure Document Intelligence
+                processed_data = process_image(file)
+                
+                if processed_data and processed_data[0]:
+                    # Agregar información del archivo a los datos procesados
+                    for data in processed_data:
+                        data['archivo_origen'] = file.filename
+                        data['numero_factura'] = f"{i+1}"
+                    
+                    all_processed_data.extend(processed_data)
+                    processed_count += 1
+                    processing_details.append(f"✓ {file.filename}: procesado exitosamente")
+                    logger.info(f"Archivo {file.filename} procesado exitosamente")
+                else:
+                    failed_count += 1
+                    processing_details.append(f"✗ {file.filename}: no se pudieron extraer datos")
+                    logger.warning(f"No se pudieron extraer datos del archivo: {file.filename}")
+                    
+            except Exception as e:
+                failed_count += 1
+                processing_details.append(f"✗ {file.filename}: error - {str(e)}")
+                logger.error(f"Error procesando archivo {file.filename}: {e}")
+        
+        # Verificar si se procesó al menos una factura
+        if not all_processed_data:
+            return ProcessResponse(
+                message="No se pudieron procesar ninguna de las facturas",
+                success=False,
+                details=processing_details
+            )
+        
+        # Generar archivo Excel con todas las facturas procesadas
+        excel_file = generate_excel(all_processed_data)
+        
+        # Preparar mensaje de resultado
+        result_message = f"Procesamiento completado: {processed_count} factura(s) procesada(s) correctamente"
+        if failed_count > 0:
+            result_message += f", {failed_count} factura(s) fallaron"
+        
+        # Preparar contenido del email
+        email_subject = f"Facturas procesadas ({processed_count}) - FacturaV"
+        
+        email_content = f"""
+        <h3>Procesamiento de facturas completado</h3>
+        <p><strong>Resultado:</strong> {result_message}</p>
+        <p><strong>Total de archivos procesados:</strong> {len(valid_files)}</p>
+        <p><strong>Fecha de procesamiento:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+        
+        <h4>Detalles del procesamiento:</h4>
+        <ul>
+        """
+        
+        for detail in processing_details:
+            email_content += f"<li>{detail}</li>"
+        
+        email_content += """
+        </ul>
+        <p>Adjunto encontrará el archivo Excel con los datos de todas las facturas procesadas correctamente.</p>
+        """
+        
+        # Enviar por email (en background)
+        background_tasks.add_task(
+            send_email,
+            current_user['email'], 
+            email_subject, 
+            email_content,
+            excel_file, 
+            f"facturas_procesadas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
+        
+        return ProcessResponse(
+            message=result_message,
+            success=True,
+            details=processing_details,
+            processed_count=processed_count,
+            failed_count=failed_count,
+            total_files=len(valid_files)
+        )
+        
+    except Exception as e:
+        logger.error(f"Error procesando múltiples facturas: {e}")
+        return ProcessResponse(
+            message=f"Error procesando las imágenes: {str(e)}",
+            success=False
+        )
+
 # Ruta para verificar estado del servidor
 @app.get("/")
 async def root():
     return {"message": "FacturaV API está funcionando correctamente"}
+
+# Ruta de health check
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "service": "FacturaV API"
+    }
+
+# Ruta para obtener información del sistema
+@app.get("/api/system-info")
+async def system_info(current_user: dict = Depends(get_current_user)):
+    return {
+        "service": "FacturaV API",
+        "version": "1.0.0",
+        "timestamp": datetime.now().isoformat(),
+        "user": current_user['email'],
+        "features": {
+            "single_upload": True,
+            "multiple_upload": True,
+            "max_files": 10
+        }
+    }
 
 if __name__ == "__main__":
     import uvicorn

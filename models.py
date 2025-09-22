@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, List
 from typing import Optional
 from datetime import datetime
 
@@ -41,3 +41,7 @@ class PasswordResetRequest(BaseModel):
 class ProcessResponse(BaseModel):
     message: str
     success: bool
+    details: Optional[List[str]] = None
+    processed_count: Optional[int] = None
+    failed_count: Optional[int] = None
+    total_files: Optional[int] = None
