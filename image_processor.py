@@ -57,12 +57,12 @@ def process_image(image_file):
                     }
                     invoice_data['Items'].append(item_data)
             
-            # Procesar impuestos
+            # Procesar impuestos - CORREGIDO: quitar el % duplicado
             tax_details = invoice.fields.get('TaxDetails')
             if tax_details and tax_details.value:
                 for tax in tax_details.value:
                     tax_data = {
-                        'Rate': get_field_value(tax.value.get('Rate')),
+                        'Rate': get_tax_rate_value(tax.value.get('Rate')),  # Función corregida
                         'Amount': get_field_value(tax.value.get('Amount'))
                     }
                     invoice_data['TaxDetails'].append(tax_data)
@@ -120,3 +120,39 @@ def get_field_value(field):
             return str(value)
         except:
             return None
+
+def get_tax_rate_value(rate_field):
+    """Función específica para manejar tasas de impuestos y quitar el % duplicado"""
+    if not rate_field or not rate_field.value:
+        return None
+    
+    rate_value = rate_field.value
+    
+    try:
+        # Si el valor es un string que ya contiene %, limpiarlo
+        if isinstance(rate_value, str):
+            # Remover cualquier % existente y espacios
+            cleaned_rate = rate_value.replace('%', '').strip()
+            # Convertir a número y formatear con un solo %
+            try:
+                rate_num = float(cleaned_rate)
+                return f"{rate_num}%"
+            except ValueError:
+                return rate_value  # Devolver original si no se puede convertir
+        
+        # Si es un número, formatearlo con un solo %
+        elif isinstance(rate_value, (int, float)):
+            return f"{rate_value}%"
+        
+        # Para otros tipos, convertir a string y limpiar
+        else:
+            rate_str = str(rate_value).replace('%', '').strip()
+            try:
+                rate_num = float(rate_str)
+                return f"{rate_num}%"
+            except ValueError:
+                return rate_str
+    
+    except Exception as e:
+        logger.warning(f"Error procesando tasa de impuesto: {e}")
+        return str(rate_value) if rate_value else None
