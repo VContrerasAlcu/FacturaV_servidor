@@ -281,7 +281,7 @@ async def upload_invoice(
             success=False
         )
 
-# NUEVO ENDPOINT para procesar múltiples facturas
+# NUEVO ENDPOINT para procesar múltiples facturas con el cambio realizado
 @app.post("/api/upload-invoices", response_model=ProcessResponse)
 async def upload_invoices(
     background_tasks: BackgroundTasks,
