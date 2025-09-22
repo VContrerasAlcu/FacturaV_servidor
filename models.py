@@ -1,5 +1,5 @@
-from pydantic import BaseModel, EmailStr, Field, List
-from typing import Optional
+from pydantic import BaseModel, EmailStr, Field
+from typing import Optional, List
 from datetime import datetime
 
 # Modelos para request/response
