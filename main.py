@@ -1,11 +1,12 @@
 from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
-from typing import List
+from typing import List, Optional
 import re
-import os
-import uuid
+import io
 from datetime import datetime
+from PIL import Image
+import logging
 
 from config import settings
 from database import init_db, get_user_by_email, save_user, verify_password, hash_password
@@ -30,7 +31,6 @@ from email_sender import send_verification_code, send_email
 from image_processor import process_image
 from excel_generator import generate_excel
 from contextlib import asynccontextmanager
-import logging
 
 # Configurar logging
 logger = logging.getLogger(__name__)
@@ -56,6 +56,57 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Módulo para compresión de imágenes
+async def compress_image(file: UploadFile, max_size_mb: int = 4, quality: int = 85) -> UploadFile:
+    """
+    Comprime una imagen si excede el tamaño máximo permitido
+    """
+    try:
+        # Leer el contenido del archivo
+        content = await file.read()
+        
+        # Verificar si necesita compresión (4MB límite de Azure DI)
+        if len(content) <= max_size_mb * 1024 * 1024:
+            # Resetear el archivo para lectura posterior
+            file.file.seek(0)
+            return file
+        
+        logger.info(f"Comprimiendo imagen {file.filename} de {len(content)/1024/1024:.2f}MB")
+        
+        # Abrir imagen con PIL
+        image = Image.open(io.BytesIO(content))
+        
+        # Convertir a RGB si es necesario (para JPEG)
+        if image.mode in ('RGBA', 'P', 'LA'):
+            image = image.convert('RGB')
+        
+        # Calcular factor de compresión
+        original_size_mb = len(content) / 1024 / 1024
+        compression_ratio = (max_size_mb * 0.9) / original_size_mb  # Usar 90% del límite
+        new_quality = max(40, int(quality * compression_ratio))  # Calidad mínima 40%
+        
+        # Comprimir imagen
+        output = io.BytesIO()
+        image.save(output, format='JPEG', quality=new_quality, optimize=True)
+        compressed_content = output.getvalue()
+        
+        logger.info(f"Imagen comprimida: {len(compressed_content)/1024/1024:.2f}MB (calidad: {new_quality}%)")
+        
+        # Crear nuevo UploadFile con el contenido comprimido
+        compressed_file = UploadFile(
+            filename=f"compressed_{file.filename}",
+            file=io.BytesIO(compressed_content),
+            content_type='image/jpeg'
+        )
+        
+        return compressed_file
+        
+    except Exception as e:
+        logger.error(f"Error comprimiendo imagen {file.filename}: {e}")
+        # En caso de error, devolver el archivo original
+        file.file.seek(0)
+        return file
 
 # Rutas de autenticación
 @app.post("/api/login", response_model=Token)
@@ -247,8 +298,11 @@ async def upload_invoice(
                 success=False
             )
         
+        # Comprimir imagen si es necesario
+        compressed_file = await compress_image(file)
+        
         # Procesar imagen con Azure Document Intelligence
-        processed_data = process_image(file)
+        processed_data = process_image(compressed_file)
         
         if not processed_data or not processed_data[0]:
             return ProcessResponse(
@@ -281,7 +335,7 @@ async def upload_invoice(
             success=False
         )
 
-# NUEVO ENDPOINT para procesar múltiples facturas con el cambio realizado
+# Endpoint para procesar múltiples facturas
 @app.post("/api/upload-invoices", response_model=ProcessResponse)
 async def upload_invoices(
     background_tasks: BackgroundTasks,
@@ -297,7 +351,7 @@ async def upload_invoices(
             )
         
         # Validar número máximo de archivos
-        max_files = 10  # Puedes ajustar este límite
+        max_files = 10
         if len(files) > max_files:
             return ProcessResponse(
                 message=f"Máximo {max_files} archivos permitidos",
@@ -333,8 +387,11 @@ async def upload_invoices(
             try:
                 logger.info(f"Procesando archivo {i+1}/{len(valid_files)}: {file.filename}")
                 
+                # Comprimir imagen antes de procesar
+                compressed_file = await compress_image(file)
+                
                 # Procesar imagen con Azure Document Intelligence
-                processed_data = process_image(file)
+                processed_data = process_image(compressed_file)
                 
                 if processed_data and processed_data[0]:
                     # Agregar información del archivo a los datos procesados
@@ -353,7 +410,11 @@ async def upload_invoices(
                     
             except Exception as e:
                 failed_count += 1
-                processing_details.append(f"✗ {file.filename}: error - {str(e)}")
+                error_msg = str(e)
+                # Mensaje más amigable para el usuario
+                if "too large" in error_msg.lower():
+                    error_msg = "imagen demasiado grande (se intentó comprimir pero aún excede el límite)"
+                processing_details.append(f"✗ {file.filename}: error - {error_msg}")
                 logger.error(f"Error procesando archivo {file.filename}: {e}")
         
         # Verificar si se procesó al menos una factura
@@ -430,7 +491,14 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "service": "FacturaV API"
+        "service": "FacturaV API",
+        "features": {
+            "single_upload": True,
+            "multiple_upload": True,
+            "image_compression": True,
+            "max_file_size_mb": 4,
+            "max_files_per_request": 10
+        }
     }
 
 # Ruta para obtener información del sistema
@@ -444,9 +512,45 @@ async def system_info(current_user: dict = Depends(get_current_user)):
         "features": {
             "single_upload": True,
             "multiple_upload": True,
-            "max_files": 10
+            "image_compression": True,
+            "max_files": 10,
+            "max_file_size": "4MB"
         }
     }
+
+# Endpoint de prueba para verificar que la API está funcionando
+@app.get("/api/test")
+async def test_endpoint():
+    return {
+        "message": "API funcionando correctamente",
+        "timestamp": datetime.now().isoformat(),
+        "endpoints_available": [
+            "/api/upload-invoice",
+            "/api/upload-invoices", 
+            "/api/login",
+            "/api/register",
+            "/api/verify-code"
+        ]
+    }
+
+# Endpoint para probar compresión de imágenes
+@app.post("/api/test-compression")
+async def test_compression(file: UploadFile = File(...)):
+    try:
+        original_size = len(await file.read())
+        file.file.seek(0)
+        
+        compressed_file = await compress_image(file)
+        compressed_size = len(await compressed_file.read())
+        
+        return {
+            "original_size_mb": round(original_size / 1024 / 1024, 2),
+            "compressed_size_mb": round(compressed_size / 1024 / 1024, 2),
+            "compression_ratio": round((original_size - compressed_size) / original_size * 100, 1),
+            "filename": file.filename
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
