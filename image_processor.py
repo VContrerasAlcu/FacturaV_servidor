@@ -2,6 +2,10 @@ from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
 from config import settings
 import io
+import logging
+
+# Configurar logging
+logger = logging.getLogger(__name__)
 
 def process_image(image_file):
     try:
@@ -34,6 +38,7 @@ def process_image(image_file):
                 'InvoiceId': get_field_value(invoice.fields.get('InvoiceId')),
                 'InvoiceDate': get_field_value(invoice.fields.get('InvoiceDate')),
                 'InvoiceTotal': get_field_value(invoice.fields.get('InvoiceTotal')),
+                'DueDate': get_field_value(invoice.fields.get('DueDate')),
                 
                 # Artículos
                 'Items': [],
@@ -67,13 +72,51 @@ def process_image(image_file):
         return processed_data
         
     except Exception as e:
-        print(f"Error procesando imagen: {e}")
+        logger.error(f"Error procesando imagen: {e}")
         raise
 
 def get_field_value(field):
-    """Extraer valor de un campo de Azure Form Recognizer"""
-    if field and field.value:
-        if hasattr(field.value, 'strftime'):  # Para campos de fecha
-            return field.value.strftime('%Y-%m-%d')
-        return field.value
-    return None
+    """Extraer valor de un campo de Azure Form Recognizer de manera segura"""
+    if not field or not field.value:
+        return None
+    
+    value = field.value
+    
+    try:
+        # Manejar tipos especiales
+        if hasattr(value, 'strftime'):  # Fechas
+            return value.strftime('%Y-%m-%d')
+        
+        elif hasattr(value, 'street_address'):  # Direcciones
+            address = value
+            # Intentar obtener la dirección formateada
+            if address.street_address:
+                return address.street_address
+            
+            # Construir dirección manualmente
+            address_parts = []
+            if address.house_number:
+                address_parts.append(str(address.house_number))
+            if address.road:
+                address_parts.append(address.road)
+            if address.city:
+                address_parts.append(address.city)
+            if address.postal_code:
+                address_parts.append(str(address.postal_code))
+            
+            return ", ".join(address_parts) if address_parts else None
+        
+        # Para currency values
+        elif hasattr(value, 'amount'):
+            return value.amount
+        
+        # Para otros tipos, devolver el valor directamente
+        return value
+        
+    except Exception as e:
+        logger.warning(f"Error procesando campo: {e}")
+        # Fallback: convertir a string
+        try:
+            return str(value)
+        except:
+            return None
