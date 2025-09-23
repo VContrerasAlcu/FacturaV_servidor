@@ -33,6 +33,7 @@ from excel_generator import generate_excel
 from contextlib import asynccontextmanager
 
 # Configurar logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 @asynccontextmanager
@@ -291,6 +292,8 @@ async def upload_invoice(
     current_user: dict = Depends(get_current_user)
 ):
     try:
+        logger.info(f"Procesando factura individual: {file.filename}")
+        
         # Validar tipo de archivo
         if not file.content_type.startswith('image/'):
             return ProcessResponse(
@@ -335,7 +338,7 @@ async def upload_invoice(
             success=False
         )
 
-# Endpoint para procesar múltiples facturas
+# Endpoint para procesar múltiples facturas - CORREGIDO
 @app.post("/api/upload-invoices", response_model=ProcessResponse)
 async def upload_invoices(
     background_tasks: BackgroundTasks,
@@ -343,8 +346,16 @@ async def upload_invoices(
     current_user: dict = Depends(get_current_user)
 ):
     try:
+        # DEBUG: Log de archivos recibidos
+        logger.info(f"📨 Recibida solicitud de procesamiento múltiple")
+        logger.info(f"📊 Número de archivos recibidos: {len(files)}")
+        
+        for i, file in enumerate(files):
+            logger.info(f"📄 Archivo {i+1}: {file.filename} - Tipo: {file.content_type}")
+        
         # Validar que se hayan subido archivos
         if not files:
+            logger.warning("❌ No se han subido archivos")
             return ProcessResponse(
                 message="No se han subido archivos",
                 success=False
@@ -353,6 +364,7 @@ async def upload_invoices(
         # Validar número máximo de archivos
         max_files = 10
         if len(files) > max_files:
+            logger.warning(f"❌ Demasiados archivos: {len(files)} (máximo {max_files})")
             return ProcessResponse(
                 message=f"Máximo {max_files} archivos permitidos",
                 success=False
@@ -369,13 +381,16 @@ async def upload_invoices(
                 invalid_files.append(file.filename)
         
         if invalid_files:
-            logger.warning(f"Archivos inválidos rechazados: {invalid_files}")
+            logger.warning(f"📛 Archivos inválidos rechazados: {invalid_files}")
         
         if not valid_files:
+            logger.error("❌ Ningún archivo válido encontrado")
             return ProcessResponse(
                 message="Ninguno de los archivos es una imagen válida",
                 success=False
             )
+        
+        logger.info(f"✅ Archivos válidos para procesar: {len(valid_files)}")
         
         # Procesar cada imagen
         all_processed_data = []
@@ -385,10 +400,11 @@ async def upload_invoices(
 
         for i, file in enumerate(valid_files):
             try:
-                logger.info(f"Procesando archivo {i+1}/{len(valid_files)}: {file.filename}")
+                logger.info(f"🔄 Procesando archivo {i+1}/{len(valid_files)}: {file.filename}")
                 
                 # Comprimir imagen antes de procesar
                 compressed_file = await compress_image(file)
+                logger.info(f"✅ Imagen {file.filename} comprimida exitosamente")
                 
                 # Procesar imagen con Azure Document Intelligence
                 processed_data = process_image(compressed_file)
@@ -402,11 +418,11 @@ async def upload_invoices(
                     all_processed_data.extend(processed_data)
                     processed_count += 1
                     processing_details.append(f"✓ {file.filename}: procesado exitosamente")
-                    logger.info(f"Archivo {file.filename} procesado exitosamente")
+                    logger.info(f"✅ Archivo {file.filename} procesado exitosamente")
                 else:
                     failed_count += 1
                     processing_details.append(f"✗ {file.filename}: no se pudieron extraer datos")
-                    logger.warning(f"No se pudieron extraer datos del archivo: {file.filename}")
+                    logger.warning(f"⚠️ No se pudieron extraer datos del archivo: {file.filename}")
                     
             except Exception as e:
                 failed_count += 1
@@ -415,18 +431,22 @@ async def upload_invoices(
                 if "too large" in error_msg.lower():
                     error_msg = "imagen demasiado grande (se intentó comprimir pero aún excede el límite)"
                 processing_details.append(f"✗ {file.filename}: error - {error_msg}")
-                logger.error(f"Error procesando archivo {file.filename}: {e}")
+                logger.error(f"❌ Error procesando archivo {file.filename}: {e}")
         
         # Verificar si se procesó al menos una factura
         if not all_processed_data:
+            logger.error("❌ No se pudo procesar ninguna factura")
             return ProcessResponse(
                 message="No se pudieron procesar ninguna de las facturas",
                 success=False,
                 details=processing_details
             )
         
+        logger.info(f"📊 Resultado del procesamiento: {processed_count} exitosas, {failed_count} fallidas")
+        
         # Generar archivo Excel con todas las facturas procesadas
         excel_file = generate_excel(all_processed_data)
+        logger.info("✅ Archivo Excel generado exitosamente")
         
         # Preparar mensaje de resultado
         result_message = f"Procesamiento completado: {processed_count} factura(s) procesada(s) correctamente"
@@ -464,6 +484,8 @@ async def upload_invoices(
             f"facturas_procesadas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         )
         
+        logger.info("✅ Email programado para envío en background")
+        
         return ProcessResponse(
             message=result_message,
             success=True,
@@ -474,7 +496,7 @@ async def upload_invoices(
         )
         
     except Exception as e:
-        logger.error(f"Error procesando múltiples facturas: {e}")
+        logger.error(f"💥 Error crítico procesando múltiples facturas: {e}")
         return ProcessResponse(
             message=f"Error procesando las imágenes: {str(e)}",
             success=False
@@ -551,6 +573,32 @@ async def test_compression(file: UploadFile = File(...)):
         }
     except Exception as e:
         return {"error": str(e)}
+
+# Nuevo endpoint para debug de múltiples archivos
+@app.post("/api/debug-upload")
+async def debug_upload(files: List[UploadFile] = File(...)):
+    """
+    Endpoint especial para debug que muestra información detallada de los archivos recibidos
+    """
+    file_info = []
+    
+    for i, file in enumerate(files):
+        content = await file.read()
+        file_info.append({
+            "index": i + 1,
+            "filename": file.filename,
+            "content_type": file.content_type,
+            "size_bytes": len(content),
+            "size_mb": round(len(content) / 1024 / 1024, 2)
+        })
+        # Resetear el archivo para lectura posterior
+        await file.seek(0)
+    
+    return {
+        "total_files": len(files),
+        "files_received": file_info,
+        "timestamp": datetime.now().isoformat()
+    }
 
 if __name__ == "__main__":
     import uvicorn
