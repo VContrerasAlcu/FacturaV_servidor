@@ -292,7 +292,7 @@ async def upload_invoice(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        logger.info(f"Procesando factura individual: {file.filename}")
+        logger.info(f"📄 Procesando factura individual: {file.filename}")
         
         # Validar tipo de archivo
         if not file.content_type.startswith('image/'):
@@ -313,6 +313,11 @@ async def upload_invoice(
                 success=False
             )
         
+        # Agregar información de origen a los datos
+        for data_item in processed_data:
+            data_item['archivo_origen'] = file.filename
+            data_item['timestamp_procesamiento'] = datetime.now().isoformat()
+        
         # Generar archivo Excel
         excel_file = generate_excel(processed_data)
         
@@ -332,7 +337,7 @@ async def upload_invoice(
         )
         
     except Exception as e:
-        logger.error(f"Error procesando factura: {e}")
+        logger.error(f"❌ Error procesando factura individual: {e}")
         return ProcessResponse(
             message=f"Error procesando imagen: {str(e)}",
             success=False
@@ -346,12 +351,9 @@ async def upload_invoices(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        # DEBUG: Log de archivos recibidos
-        logger.info(f"📨 Recibida solicitud de procesamiento múltiple")
-        logger.info(f"📊 Número de archivos recibidos: {len(files)}")
-        
-        for i, file in enumerate(files):
-            logger.info(f"📄 Archivo {i+1}: {file.filename} - Tipo: {file.content_type}")
+        # DEBUG: Información inicial
+        logger.info(f"🎯 INICIO PROCESAMIENTO MÚLTIPLE")
+        logger.info(f"📦 Número de archivos recibidos: {len(files)}")
         
         # Validar que se hayan subido archivos
         if not files:
@@ -374,7 +376,8 @@ async def upload_invoices(
         invalid_files = []
         valid_files = []
         
-        for file in files:
+        for i, file in enumerate(files):
+            logger.info(f"📄 Archivo {i+1}: {file.filename} - Tipo: {file.content_type}")
             if file.content_type and file.content_type.startswith('image/'):
                 valid_files.append(file)
             else:
@@ -409,16 +412,19 @@ async def upload_invoices(
                 # Procesar imagen con Azure Document Intelligence
                 processed_data = process_image(compressed_file)
                 
-                if processed_data and processed_data[0]:
-                    # Agregar información del archivo a los datos procesados
-                    for data in processed_data:
-                        data['archivo_origen'] = file.filename
-                        data['numero_factura'] = f"{i+1}"
+                if processed_data and len(processed_data) > 0:
+                    # Agregar información del archivo a CADA elemento de datos
+                    for data_item in processed_data:
+                        data_item['archivo_origen'] = file.filename
+                        data_item['numero_factura'] = f"{i+1}"
+                        data_item['indice_procesamiento'] = i + 1
+                        data_item['timestamp_procesamiento'] = datetime.now().isoformat()
                     
+                    # EXTENDER la lista, no hacer append
                     all_processed_data.extend(processed_data)
                     processed_count += 1
-                    processing_details.append(f"✓ {file.filename}: procesado exitosamente")
-                    logger.info(f"✅ Archivo {file.filename} procesado exitosamente")
+                    processing_details.append(f"✓ {file.filename}: {len(processed_data)} elementos procesados")
+                    logger.info(f"✅ Archivo {file.filename} procesado exitosamente - {len(processed_data)} elementos")
                 else:
                     failed_count += 1
                     processing_details.append(f"✗ {file.filename}: no se pudieron extraer datos")
@@ -427,11 +433,26 @@ async def upload_invoices(
             except Exception as e:
                 failed_count += 1
                 error_msg = str(e)
-                # Mensaje más amigable para el usuario
                 if "too large" in error_msg.lower():
                     error_msg = "imagen demasiado grande (se intentó comprimir pero aún excede el límite)"
                 processing_details.append(f"✗ {file.filename}: error - {error_msg}")
                 logger.error(f"❌ Error procesando archivo {file.filename}: {e}")
+        
+        # VERIFICAR resultados del procesamiento
+        logger.info(f"📊 RESULTADO DEL PROCESAMIENTO:")
+        logger.info(f"   • Elementos procesados: {len(all_processed_data)}")
+        logger.info(f"   • Archivos exitosos: {processed_count}")
+        logger.info(f"   • Archivos fallidos: {failed_count}")
+        logger.info(f"   • Total archivos: {len(valid_files)}")
+        
+        # Verificar archivos únicos procesados
+        archivos_unicos = set()
+        for data in all_processed_data:
+            if 'archivo_origen' in data:
+                archivos_unicos.add(data['archivo_origen'])
+        
+        logger.info(f"📁 Archivos únicos con datos: {len(archivos_unicos)}")
+        logger.info(f"📂 Lista: {list(archivos_unicos)}")
         
         # Verificar si se procesó al menos una factura
         if not all_processed_data:
@@ -442,11 +463,24 @@ async def upload_invoices(
                 details=processing_details
             )
         
-        logger.info(f"📊 Resultado del procesamiento: {processed_count} exitosas, {failed_count} fallidas")
-        
-        # Generar archivo Excel con todas las facturas procesadas
+        # Generar archivo Excel con TODAS las facturas procesadas
+        logger.info(f"📊 Generando Excel con {len(all_processed_data)} elementos...")
         excel_file = generate_excel(all_processed_data)
-        logger.info("✅ Archivo Excel generado exitosamente")
+        
+        if not excel_file:
+            logger.error("❌ No se pudo generar el archivo Excel")
+            return ProcessResponse(
+                message="Error generando el archivo de resultados",
+                success=False,
+                details=processing_details
+            )
+        
+        # Verificar el Excel generado
+        try:
+            excel_content = excel_file.getvalue()
+            logger.info(f"✅ Excel generado exitosamente - Tamaño: {len(excel_content)} bytes")
+        except Exception as e:
+            logger.error(f"❌ Error verificando Excel: {e}")
         
         # Preparar mensaje de resultado
         result_message = f"Procesamiento completado: {processed_count} factura(s) procesada(s) correctamente"
@@ -460,6 +494,8 @@ async def upload_invoices(
         <h3>Procesamiento de facturas completado</h3>
         <p><strong>Resultado:</strong> {result_message}</p>
         <p><strong>Total de archivos procesados:</strong> {len(valid_files)}</p>
+        <p><strong>Elementos extraídos:</strong> {len(all_processed_data)}</p>
+        <p><strong>Archivos únicos procesados:</strong> {len(archivos_unicos)}</p>
         <p><strong>Fecha de procesamiento:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
         
         <h4>Detalles del procesamiento:</h4>
@@ -472,6 +508,7 @@ async def upload_invoices(
         email_content += """
         </ul>
         <p>Adjunto encontrará el archivo Excel con los datos de todas las facturas procesadas correctamente.</p>
+        <p><strong>El archivo contiene {len(archivos_unicos)} hojas, una para cada factura procesada.</strong></p>
         """
         
         # Enviar por email (en background)
@@ -492,7 +529,9 @@ async def upload_invoices(
             details=processing_details,
             processed_count=processed_count,
             failed_count=failed_count,
-            total_files=len(valid_files)
+            total_files=len(valid_files),
+            unique_files_processed=len(archivos_unicos),
+            total_elements=len(all_processed_data)
         )
         
     except Exception as e:
@@ -574,7 +613,7 @@ async def test_compression(file: UploadFile = File(...)):
     except Exception as e:
         return {"error": str(e)}
 
-# Nuevo endpoint para debug de múltiples archivos
+# Endpoint para debug de múltiples archivos
 @app.post("/api/debug-upload")
 async def debug_upload(files: List[UploadFile] = File(...)):
     """
@@ -599,6 +638,65 @@ async def debug_upload(files: List[UploadFile] = File(...)):
         "files_received": file_info,
         "timestamp": datetime.now().isoformat()
     }
+
+# Endpoint para test específico de generación de Excel con múltiples facturas
+@app.post("/api/test-excel-generation")
+async def test_excel_generation(files: List[UploadFile] = File(...)):
+    """
+    Endpoint para probar específicamente la generación de Excel con múltiples facturas
+    """
+    try:
+        all_processed_data = []
+        
+        for i, file in enumerate(files):
+            logger.info(f"🔍 Procesando archivo de prueba {i+1}: {file.filename}")
+            
+            # Comprimir imagen
+            compressed_file = await compress_image(file)
+            
+            # Procesar imagen
+            processed_data = process_image(compressed_file)
+            
+            if processed_data:
+                # Agregar información de origen a cada elemento
+                for data_item in processed_data:
+                    data_item['archivo_origen'] = file.filename
+                    data_item['numero_factura'] = f"{i+1}"
+                    data_item['fecha_procesamiento'] = datetime.now().isoformat()
+                
+                all_processed_data.extend(processed_data)
+                logger.info(f"✅ {file.filename}: {len(processed_data)} elementos")
+            else:
+                logger.warning(f"⚠️ {file.filename}: sin datos")
+        
+        # Generar Excel
+        excel_file = generate_excel(all_processed_data)
+        
+        if excel_file:
+            excel_content = excel_file.getvalue()
+            archivos_unicos = set(d.get('archivo_origen', '') for d in all_processed_data)
+            
+            return {
+                "success": True,
+                "archivos_procesados": len(files),
+                "elementos_en_excel": len(all_processed_data),
+                "archivos_unicos": len(archivos_unicos),
+                "lista_archivos": list(archivos_unicos),
+                "tamaño_excel_bytes": len(excel_content),
+                "mensaje": f"Excel generado con {len(all_processed_data)} elementos de {len(archivos_unicos)} archivos"
+            }
+        else:
+            return {
+                "success": False,
+                "mensaje": "Error generando Excel"
+            }
+            
+    except Exception as e:
+        logger.error(f"❌ Error en test-excel-generation: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 if __name__ == "__main__":
     import uvicorn
