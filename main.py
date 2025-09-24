@@ -697,6 +697,71 @@ async def test_excel_generation(files: List[UploadFile] = File(...)):
             "success": False,
             "error": str(e)
         }
+@app.post("/api/debug-excel")
+async def debug_excel_generation(files: List[UploadFile] = File(...)):
+    """
+    Endpoint para debug específico del Excel
+    """
+    try:
+        all_processed_data = []
+        
+        for i, file in enumerate(files):
+            logger.info(f"🔍 Procesando {file.filename}...")
+            
+            compressed_file = await compress_image(file)
+            processed_data = process_image(compressed_file)
+            
+            if processed_data:
+                for data_item in processed_data:
+                    data_item['archivo_origen'] = file.filename
+                    data_item['indice'] = i + 1
+                    data_item['timestamp'] = datetime.now().isoformat()
+                
+                all_processed_data.extend(processed_data)
+                logger.info(f"✅ {file.filename} → {len(processed_data)} elementos")
+            else:
+                logger.warning(f"⚠️ {file.filename} → 0 elementos")
+        
+        # Generar Excel
+        excel_file = generate_excel(all_processed_data)
+        
+        if excel_file:
+            # Leer el Excel generado para analizarlo
+            import io
+            import openpyxl
+            
+            excel_content = excel_file.getvalue()
+            workbook = openpyxl.load_workbook(io.BytesIO(excel_content))
+            
+            sheet_info = []
+            for sheet_name in workbook.sheetnames:
+                sheet = workbook[sheet_name]
+                sheet_info.append({
+                    'nombre': sheet_name,
+                    'filas': sheet.max_row,
+                    'columnas': sheet.max_column
+                })
+            
+            return {
+                "success": True,
+                "archivos_procesados": len(files),
+                "elementos_totales": len(all_processed_data),
+                "hojas_excel": sheet_info,
+                "tamaño_bytes": len(excel_content),
+                "mensaje": f"Excel con {len(sheet_info)} hojas generado"
+            }
+        else:
+            return {
+                "success": False,
+                "mensaje": "Error generando Excel"
+            }
+            
+    except Exception as e:
+        logger.error(f"❌ Error en debug-excel: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 if __name__ == "__main__":
     import uvicorn
