@@ -640,63 +640,6 @@ async def debug_upload(files: List[UploadFile] = File(...)):
     }
 
 # Endpoint para test específico de generación de Excel con múltiples facturas
-@app.post("/api/test-excel-generation")
-async def test_excel_generation(files: List[UploadFile] = File(...)):
-    """
-    Endpoint para probar específicamente la generación de Excel con múltiples facturas
-    """
-    try:
-        all_processed_data = []
-        
-        for i, file in enumerate(files):
-            logger.info(f"🔍 Procesando archivo de prueba {i+1}: {file.filename}")
-            
-            # Comprimir imagen
-            compressed_file = await compress_image(file)
-            
-            # Procesar imagen
-            processed_data = process_image(compressed_file)
-            
-            if processed_data:
-                # Agregar información de origen a cada elemento
-                for data_item in processed_data:
-                    data_item['archivo_origen'] = file.filename
-                    data_item['numero_factura'] = f"{i+1}"
-                    data_item['fecha_procesamiento'] = datetime.now().isoformat()
-                
-                all_processed_data.extend(processed_data)
-                logger.info(f"✅ {file.filename}: {len(processed_data)} elementos")
-            else:
-                logger.warning(f"⚠️ {file.filename}: sin datos")
-        
-        # Generar Excel
-        excel_file = generate_excel(all_processed_data)
-        
-        if excel_file:
-            excel_content = excel_file.getvalue()
-            archivos_unicos = set(d.get('archivo_origen', '') for d in all_processed_data)
-            
-            return {
-                "success": True,
-                "archivos_procesados": len(files),
-                "elementos_en_excel": len(all_processed_data),
-                "archivos_unicos": len(archivos_unicos),
-                "lista_archivos": list(archivos_unicos),
-                "tamaño_excel_bytes": len(excel_content),
-                "mensaje": f"Excel generado con {len(all_processed_data)} elementos de {len(archivos_unicos)} archivos"
-            }
-        else:
-            return {
-                "success": False,
-                "mensaje": "Error generando Excel"
-            }
-            
-    except Exception as e:
-        logger.error(f"❌ Error en test-excel-generation: {e}")
-        return {
-            "success": False,
-            "error": str(e)
-        }
 @app.post("/api/debug-excel")
 async def debug_excel_generation(files: List[UploadFile] = File(...)):
     """
