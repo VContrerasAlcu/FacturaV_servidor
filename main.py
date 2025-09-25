@@ -705,7 +705,7 @@ async def debug_excel_generation(files: List[UploadFile] = File(...)):
             "success": False,
             "error": str(e)
         }
-# En main.py, agrega esto temporalmente
+
 @app.get("/api/check-sendgrid")
 async def check_sendgrid():
     """Endpoint para verificar la configuración de SendGrid"""
@@ -714,6 +714,76 @@ async def check_sendgrid():
         "from_email": settings.FROM_EMAIL,
         "api_key_length": len(settings.SENDGRID_API_KEY) if settings.SENDGRID_API_KEY else 0
     }
+
+# Agrega estos endpoints en main.py para debugging
+
+@app.get("/api/debug/email-config")
+async def debug_email_config():
+    """Verificar configuración de email"""
+    return {
+        "sendgrid_configured": bool(settings.SENDGRID_API_KEY),
+        "from_email": settings.FROM_EMAIL,
+        "api_key_prefix": settings.SENDGRID_API_KEY[:10] + "..." if settings.SENDGRID_API_KEY else "No configurada"
+    }
+
+@app.post("/api/debug/test-email-simple")
+async def test_email_simple(
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """Test simple de email sin adjuntos"""
+    try:
+        from email_sender import send_email
+        
+        # Email simple sin adjuntos
+        success = send_email(
+            current_user['email'],
+            "TEST Simple - FacturaV",
+            "<h1>Test Simple</h1><p>Si recibes esto, el email básico funciona.</p>"
+        )
+        
+        return {
+            "success": success,
+            "message": "Email de prueba enviado" if success else "Error enviando email",
+            "user_email": current_user['email']
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error en test-email-simple: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/debug/test-email-with-attachment")
+async def test_email_with_attachment(
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """Test de email con archivo adjunto"""
+    try:
+        from email_sender import send_email_with_file
+        from io import BytesIO
+        
+        # Crear un archivo de prueba simple
+        test_content = b"Este es un archivo de prueba generado por FacturaV"
+        test_file = BytesIO(test_content)
+        
+        success = send_email_with_file(
+            current_user['email'],
+            "TEST Con Adjunto - FacturaV",
+            "<h1>Test con Adjunto</h1><p>Si recibes esto con el archivo, todo funciona.</p>",
+            test_file,
+            "test.txt"
+        )
+        
+        return {
+            "success": success,
+            "message": "Email con adjunto enviado" if success else "Error enviando email con adjunto",
+            "user_email": current_user['email'],
+            "file_size": len(test_content)
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error en test-email-with-attachment: {e}")
+        return {"success": False, "error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
