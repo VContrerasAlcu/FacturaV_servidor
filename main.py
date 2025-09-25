@@ -784,6 +784,29 @@ async def test_email_with_attachment(
     except Exception as e:
         logger.error(f"❌ Error en test-email-with-attachment: {e}")
         return {"success": False, "error": str(e)}
+    
+@app.post("/api/debug/test-with-verified-email")
+async def test_with_verified_email():
+    """Test con email FROM verificado en SendGrid"""
+    try:
+        from sendgrid import SendGridAPIClient
+        from sendgrid.helpers.mail import Mail
+        
+        # Usar un dominio verificado en SendGrid
+        message = Mail(
+            from_email='vcapost23@gmail.com',  # Cambia esto
+            to_emails='vcontrerasalcu@gmail.com',
+            subject='TEST con Email Verificado',
+            html_content='<h1>Test con email verificado</h1>'
+        )
+        
+        sg = SendGridAPIClient("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")
+        response = sg.send(message)
+        
+        return {"status": response.status_code, "success": response.status_code == 202}
+        
+    except Exception as e:
+        return {"error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
