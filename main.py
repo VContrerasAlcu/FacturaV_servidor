@@ -705,6 +705,15 @@ async def debug_excel_generation(files: List[UploadFile] = File(...)):
             "success": False,
             "error": str(e)
         }
+# En main.py, agrega esto temporalmente
+@app.get("/api/check-sendgrid")
+async def check_sendgrid():
+    """Endpoint para verificar la configuración de SendGrid"""
+    return {
+        "sendgrid_configured": bool(settings.SENDGRID_API_KEY),
+        "from_email": settings.FROM_EMAIL,
+        "api_key_length": len(settings.SENDGRID_API_KEY) if settings.SENDGRID_API_KEY else 0
+    }
 
 if __name__ == "__main__":
     import uvicorn
