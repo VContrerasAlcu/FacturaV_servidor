@@ -475,12 +475,21 @@ async def upload_invoices(
                 details=processing_details
             )
         
-        # Verificar el Excel generado
+        # Verificar el Excel generado - CORREGIDO
         try:
-            excel_content = excel_file.getvalue()
-            logger.info(f"✅ Excel generado exitosamente - Tamaño: {len(excel_content)} bytes")
+            # Verificar si es bytes y obtener tamaño
+            if isinstance(excel_file, bytes):
+                excel_size = len(excel_file)
+                logger.info(f"✅ Excel generado exitosamente - Tamaño: {excel_size} bytes")
+            else:
+                # Si es BytesIO, usar getvalue()
+                excel_content = excel_file.getvalue()
+                excel_size = len(excel_content)
+                logger.info(f"✅ Excel generado exitosamente - Tamaño: {excel_size} bytes")
         except Exception as e:
-            logger.error(f"❌ Error verificando Excel: {e}")
+            # Si falla la verificación, solo registrar el error pero continuar
+            logger.error(f"⚠️ Error verificando Excel (no crítico): {e}")
+            excel_size = "desconocido"
         
         # Preparar mensaje de resultado
         result_message = f"Procesamiento completado: {processed_count} factura(s) procesada(s) correctamente"
@@ -673,8 +682,13 @@ async def debug_excel_generation(files: List[UploadFile] = File(...)):
             import io
             import openpyxl
             
-            excel_content = excel_file.getvalue()
-            workbook = openpyxl.load_workbook(io.BytesIO(excel_content))
+            # Manejar tanto bytes como BytesIO
+            if isinstance(excel_file, bytes):
+                excel_content = excel_file
+                workbook = openpyxl.load_workbook(io.BytesIO(excel_content))
+            else:
+                excel_content = excel_file.getvalue()
+                workbook = openpyxl.load_workbook(io.BytesIO(excel_content))
             
             sheet_info = []
             for sheet_name in workbook.sheetnames:
