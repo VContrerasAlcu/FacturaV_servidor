@@ -7,6 +7,7 @@ import io
 from datetime import datetime
 from PIL import Image
 import logging
+import zipfile
 
 from config import settings
 from database import init_db, get_user_by_email, save_user, verify_password, hash_password
@@ -27,9 +28,9 @@ from models import (
     PasswordResetRequest,
     ProcessResponse
 )
-from email_sender import send_verification_code, send_email
+from email_sender import send_verification_code, send_email, send_email_with_file
 from image_processor import process_image
-from excel_generator import generate_excel
+from excel_generator import generate_excel, generate_single_excel
 from contextlib import asynccontextmanager
 
 # Configurar logging
@@ -108,6 +109,27 @@ async def compress_image(file: UploadFile, max_size_mb: int = 4, quality: int = 
         # En caso de error, devolver el archivo original
         file.file.seek(0)
         return file
+
+def crear_zip_con_excels(archivos_empresas):
+    """
+    Crea un archivo ZIP con todos los Excel de las empresas
+    """
+    try:
+        zip_buffer = io.BytesIO()
+        
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for archivo_empresa in archivos_empresas:
+                empresa_nombre = archivo_empresa['empresa']
+                excel_data = archivo_empresa['archivo']
+                nombre_archivo = f"{empresa_nombre.replace(' ', '_')}_facturas.xlsx"
+                zip_file.writestr(nombre_archivo, excel_data)
+        
+        zip_buffer.seek(0)
+        return zip_buffer
+        
+    except Exception as e:
+        logger.error(f"❌ Error creando archivo ZIP: {e}")
+        return None
 
 # Rutas de autenticación
 @app.post("/api/login", response_model=Token)
@@ -318,17 +340,23 @@ async def upload_invoice(
             data_item['archivo_origen'] = file.filename
             data_item['timestamp_procesamiento'] = datetime.now().isoformat()
         
-        # Generar archivo Excel
-        excel_file = generate_excel(processed_data)
+        # Generar archivo Excel (usar función de compatibilidad para una sola factura)
+        excel_file = generate_single_excel(processed_data)
+        
+        if not excel_file:
+            return ProcessResponse(
+                message="Error generando el archivo Excel",
+                success=False
+            )
         
         # Enviar por email (en background)
         background_tasks.add_task(
-            send_email,
+            send_email_with_file,
             current_user['email'], 
             "Factura procesada - FacturaV", 
             "Adjunto encontrará el archivo Excel con los datos de su factura procesada.",
             excel_file, 
-            "factura.xlsx"
+            f"factura_{file.filename.split('.')[0]}.xlsx"
         )
         
         return ProcessResponse(
@@ -463,36 +491,53 @@ async def upload_invoices(
                 details=processing_details
             )
         
-        # Generar archivo Excel con TODAS las facturas procesadas
-        logger.info(f"📊 Generando Excel con {len(all_processed_data)} elementos...")
-        excel_file = generate_excel(all_processed_data)
+        # Generar archivos Excel por empresa
+        logger.info(f"📊 Generando Excel para {len(all_processed_data)} elementos...")
+        archivos_empresas = generate_excel(all_processed_data)
         
-        if not excel_file:
-            logger.error("❌ No se pudo generar el archivo Excel")
+        if not archivos_empresas:
+            logger.error("❌ No se pudieron generar los archivos Excel")
             return ProcessResponse(
-                message="Error generando el archivo de resultados",
+                message="Error generando los archivos de resultados",
                 success=False,
                 details=processing_details
             )
         
-        # Verificar el Excel generado - CORREGIDO
-        try:
-            # Verificar si es bytes y obtener tamaño
-            if isinstance(excel_file, bytes):
-                excel_size = len(excel_file)
-                logger.info(f"✅ Excel generado exitosamente - Tamaño: {excel_size} bytes")
+        # Verificar los Excel generados
+        total_empresas = len(archivos_empresas)
+        total_facturas = sum(empresa['cantidad_facturas'] for empresa in archivos_empresas)
+        
+        logger.info(f"✅ Se generaron {total_empresas} archivos Excel para {total_facturas} facturas")
+        
+        for i, empresa in enumerate(archivos_empresas):
+            logger.info(f"   📊 Empresa {i+1}: {empresa['empresa']} - {empresa['cantidad_facturas']} facturas")
+        
+        # Crear archivo ZIP con todos los Excel
+        zip_file = crear_zip_con_excels(archivos_empresas)
+        
+        if not zip_file:
+            logger.error("❌ Error creando archivo ZIP")
+            # Fallback: enviar solo el primer Excel
+            if archivos_empresas:
+                excel_data = archivos_empresas[0]['archivo']
+                empresa_nombre = archivos_empresas[0]['empresa']
+                zip_file = io.BytesIO(excel_data)
+                zip_filename = f"{empresa_nombre.replace(' ', '_')}_facturas.xlsx"
             else:
-                # Si es BytesIO, usar getvalue()
-                excel_content = excel_file.getvalue()
-                excel_size = len(excel_content)
-                logger.info(f"✅ Excel generado exitosamente - Tamaño: {excel_size} bytes")
-        except Exception as e:
-            # Si falla la verificación, solo registrar el error pero continuar
-            logger.error(f"⚠️ Error verificando Excel (no crítico): {e}")
-            excel_size = "desconocido"
+                return ProcessResponse(
+                    message="Error generando archivos de resultados",
+                    success=False,
+                    details=processing_details
+                )
+        else:
+            zip_filename = f"facturas_empresas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
         
         # Preparar mensaje de resultado
-        result_message = f"Procesamiento completado: {processed_count} factura(s) procesada(s) correctamente"
+        if total_empresas == 1:
+            result_message = f"Procesamiento completado: {processed_count} factura(s) procesada(s) para 1 empresa"
+        else:
+            result_message = f"Procesamiento completado: {processed_count} factura(s) procesada(s) para {total_empresas} empresas"
+        
         if failed_count > 0:
             result_message += f", {failed_count} factura(s) fallaron"
         
@@ -503,8 +548,8 @@ async def upload_invoices(
         <h3>Procesamiento de facturas completado</h3>
         <p><strong>Resultado:</strong> {result_message}</p>
         <p><strong>Total de archivos procesados:</strong> {len(valid_files)}</p>
-        <p><strong>Elementos extraídos:</strong> {len(all_processed_data)}</p>
-        <p><strong>Archivos únicos procesados:</strong> {len(archivos_unicos)}</p>
+        <p><strong>Empresas detectadas:</strong> {total_empresas}</p>
+        <p><strong>Facturas procesadas:</strong> {total_facturas}</p>
         <p><strong>Fecha de procesamiento:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
         
         <h4>Detalles del procesamiento:</h4>
@@ -514,20 +559,29 @@ async def upload_invoices(
         for detail in processing_details:
             email_content += f"<li>{detail}</li>"
         
+        email_content += f"""
+        </ul>
+        
+        <h4>Empresas procesadas:</h4>
+        <ul>
+        """
+        
+        for empresa in archivos_empresas:
+            email_content += f"<li><strong>{empresa['empresa']}</strong>: {empresa['cantidad_facturas']} factura(s)</li>"
+        
         email_content += """
         </ul>
-        <p>Adjunto encontrará el archivo Excel con los datos de todas las facturas procesadas correctamente.</p>
-        <p><strong>El archivo contiene {len(archivos_unicos)} hojas, una para cada factura procesada.</strong></p>
+        <p>Adjunto encontrará el archivo ZIP con los Excel organizados por empresa.</p>
         """
         
         # Enviar por email (en background)
         background_tasks.add_task(
-            send_email,
+            send_email_with_file,
             current_user['email'], 
             email_subject, 
             email_content,
-            excel_file, 
-            f"facturas_procesadas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            zip_file, 
+            zip_filename
         )
         
         logger.info("✅ Email programado para envío en background")
@@ -540,7 +594,9 @@ async def upload_invoices(
             failed_count=failed_count,
             total_files=len(valid_files),
             unique_files_processed=len(archivos_unicos),
-            total_elements=len(all_processed_data)
+            total_elements=len(all_processed_data),
+            empresas_procesadas=total_empresas,
+            facturas_totales=total_facturas
         )
         
     except Exception as e:
@@ -674,38 +730,23 @@ async def debug_excel_generation(files: List[UploadFile] = File(...)):
             else:
                 logger.warning(f"⚠️ {file.filename} → 0 elementos")
         
-        # Generar Excel
-        excel_file = generate_excel(all_processed_data)
+        # Generar Excel por empresa
+        archivos_empresas = generate_excel(all_processed_data)
         
-        if excel_file:
-            # Leer el Excel generado para analizarlo
-            import io
-            import openpyxl
-            
-            # Manejar tanto bytes como BytesIO
-            if isinstance(excel_file, bytes):
-                excel_content = excel_file
-                workbook = openpyxl.load_workbook(io.BytesIO(excel_content))
-            else:
-                excel_content = excel_file.getvalue()
-                workbook = openpyxl.load_workbook(io.BytesIO(excel_content))
-            
-            sheet_info = []
-            for sheet_name in workbook.sheetnames:
-                sheet = workbook[sheet_name]
-                sheet_info.append({
-                    'nombre': sheet_name,
-                    'filas': sheet.max_row,
-                    'columnas': sheet.max_column
-                })
-            
+        if archivos_empresas:
             return {
                 "success": True,
                 "archivos_procesados": len(files),
                 "elementos_totales": len(all_processed_data),
-                "hojas_excel": sheet_info,
-                "tamaño_bytes": len(excel_content),
-                "mensaje": f"Excel con {len(sheet_info)} hojas generado"
+                "empresas_detectadas": len(archivos_empresas),
+                "detalle_empresas": [
+                    {
+                        'empresa': emp['empresa'],
+                        'facturas': emp['cantidad_facturas'],
+                        'resumen_iva': emp['resumen_iva']
+                    } for emp in archivos_empresas
+                ],
+                "mensaje": f"Se generaron {len(archivos_empresas)} archivos Excel"
             }
         else:
             return {
@@ -747,8 +788,6 @@ async def test_email_simple(
 ):
     """Test simple de email sin adjuntos"""
     try:
-        from email_sender import send_email
-        
         # Email simple sin adjuntos
         success = send_email(
             current_user['email'],
@@ -773,7 +812,6 @@ async def test_email_with_attachment(
 ):
     """Test de email con archivo adjunto"""
     try:
-        from email_sender import send_email_with_file
         from io import BytesIO
         
         # Crear un archivo de prueba simple
