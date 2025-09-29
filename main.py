@@ -495,7 +495,7 @@ async def upload_multipage_invoices(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Endpoint especializado para facturas multipágina
+    Endpoint especializado para facturas multipágina - VERSIÓN CORREGIDA
     """
     try:
         logger.info(f"📑 INICIO PROCESAMIENTO MULTIPÁGINA")
@@ -524,7 +524,7 @@ async def upload_multipage_invoices(
             paginas.sort(key=lambda x: x['numero_pagina'])
             logger.info(f"   📋 {nombre_factura}: {len(paginas)} páginas")
         
-        # 3. Procesar cada grupo de facturas - CORREGIDO
+        # 3. 🆕 ENFOQUE SIMPLIFICADO: Procesar cada archivo individualmente pero agrupar resultados
         all_processed_data = []
         processing_details = []
         facturas_procesadas = 0
@@ -532,49 +532,62 @@ async def upload_multipage_invoices(
         total_paginas_procesadas = 0
         facturas_multipagina = 0
         
-        for nombre_factura, paginas_info in grupos_facturas.items():
+        # Primero, procesar todos los archivos individualmente
+        archivos_procesados = {}
+        for file in files:
             try:
-                # 🆕 CORRECCIÓN: Leer contenido y crear nuevos UploadFiles en memoria
-                archivos_paginas = []
-                for item in paginas_info:
-                    # Leer el contenido del archivo
-                    content = await item['archivo'].read()
-                    # Crear un objeto file-like en memoria
-                    file_like = io.BytesIO(content)
-                    # Crear nuevo UploadFile
-                    upload_file = UploadFile(
-                        filename=item['nombre_archivo'],
-                        file=file_like,
-                        content_type=item['archivo'].content_type
-                    )
-                    archivos_paginas.append(upload_file)
-                    # Resetear el archivo original para posible reuso
-                    await item['archivo'].seek(0)
+                logger.info(f"🔄 Procesando archivo individual: {file.filename}")
                 
-                numero_paginas = len(archivos_paginas)
+                # Comprimir imagen
+                compressed_file = await compress_image(file)
                 
-                logger.info(f"🔄 Procesando factura '{nombre_factura}' ({numero_paginas} páginas)")
-                
-                # Comprimir cada página
-                archivos_comprimidos = []
-                for archivo in archivos_paginas:
-                    archivo_comprimido = await compress_image(archivo)
-                    archivos_comprimidos.append(archivo_comprimido)
-                
-                # 🆕 CORRECCIÓN: Pasar la lista de archivos comprimidos
-                processed_data = process_image(archivos_comprimidos)
+                # Procesar individualmente
+                processed_data = process_image(compressed_file)
                 
                 if processed_data and len(processed_data) > 0:
-                    # Agregar información de multipágina a cada elemento
-                    for data_item in processed_data:
-                        data_item['nombre_factura'] = nombre_factura
-                        data_item['numero_paginas'] = numero_paginas
-                        data_item['paginas_procesadas'] = numero_paginas
-                        data_item['es_multipagina'] = numero_paginas > 1
-                        data_item['archivos_origen'] = [item['nombre_archivo'] for item in paginas_info]
-                        data_item['timestamp_procesamiento'] = datetime.now().isoformat()
+                    archivos_procesados[file.filename] = {
+                        'data': processed_data,
+                        'success': True
+                    }
+                    logger.info(f"✅ {file.filename} procesado exitosamente")
+                else:
+                    archivos_procesados[file.filename] = {
+                        'data': [],
+                        'success': False
+                    }
+                    logger.warning(f"⚠️ No se pudieron extraer datos de: {file.filename}")
                     
-                    all_processed_data.extend(processed_data)
+            except Exception as e:
+                logger.error(f"❌ Error procesando {file.filename}: {e}")
+                archivos_procesados[file.filename] = {
+                    'data': [],
+                    'success': False
+                }
+        
+        # 4. Agrupar resultados según la detección
+        for nombre_factura, paginas_info in grupos_facturas.items():
+            try:
+                numero_paginas = len(paginas_info)
+                datos_factura = []
+                
+                # Recopilar datos de todas las páginas de esta factura
+                for pagina in paginas_info:
+                    nombre_archivo = pagina['nombre_archivo']
+                    if (nombre_archivo in archivos_procesados and 
+                        archivos_procesados[nombre_archivo]['success']):
+                        
+                        for data_item in archivos_procesados[nombre_archivo]['data']:
+                            # Agregar información de multipágina
+                            data_item['nombre_factura'] = nombre_factura
+                            data_item['numero_paginas'] = numero_paginas
+                            data_item['paginas_procesadas'] = numero_paginas
+                            data_item['es_multipagina'] = numero_paginas > 1
+                            data_item['archivos_origen'] = [p['nombre_archivo'] for p in paginas_info]
+                            data_item['timestamp_procesamiento'] = datetime.now().isoformat()
+                            datos_factura.append(data_item)
+                
+                if datos_factura:
+                    all_processed_data.extend(datos_factura)
                     facturas_procesadas += 1
                     total_paginas_procesadas += numero_paginas
                     
@@ -582,10 +595,9 @@ async def upload_multipage_invoices(
                         facturas_multipagina += 1
                     
                     processing_details.append(
-                        f"✓ {nombre_factura}: {len(processed_data)} factura(s) extraída(s) de {numero_paginas} página(s)"
+                        f"✓ {nombre_factura}: {len(datos_factura)} factura(s) extraída(s) de {numero_paginas} página(s)"
                     )
-                    
-                    logger.info(f"✅ Factura '{nombre_factura}' procesada exitosamente")
+                    logger.info(f"✅ Factura '{nombre_factura}' agrupada exitosamente")
                 else:
                     facturas_fallidas += 1
                     processing_details.append(f"✗ {nombre_factura}: no se pudieron extraer datos")
@@ -594,9 +606,10 @@ async def upload_multipage_invoices(
             except Exception as e:
                 facturas_fallidas += 1
                 processing_details.append(f"✗ {nombre_factura}: error - {str(e)}")
-                logger.error(f"❌ Error procesando factura {nombre_factura}: {e}")
+                logger.error(f"❌ Error agrupando factura {nombre_factura}: {e}")
         
-        # 4. Verificar resultados
+        # El resto del código permanece igual...
+        # 5. Verificar resultados
         if not all_processed_data:
             return ProcessResponse(
                 message="No se pudieron procesar ninguna de las facturas",
@@ -604,7 +617,7 @@ async def upload_multipage_invoices(
                 details=processing_details
             )
         
-        # 5. Generar Excel por empresa
+        # 6. Generar Excel por empresa
         archivos_empresas = generate_excel(all_processed_data)
         
         if not archivos_empresas:
@@ -614,12 +627,12 @@ async def upload_multipage_invoices(
                 details=processing_details
             )
         
-        # 6. Crear ZIP
+        # 7. Crear ZIP
         zip_file = crear_zip_con_excels(archivos_empresas)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         zip_filename = f"facturas_multipagina_{timestamp}.zip"
         
-        # 7. Preparar y enviar email
+        # 8. Preparar y enviar email
         email_subject = f"Facturas multipágina procesadas ({facturas_procesadas}) - FacturaV"
         
         email_content = f"""
