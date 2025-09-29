@@ -7,18 +7,61 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-# Configurar cliente de Azure Document Intelligence
-credential = AzureKeyCredential(settings.AZURE_DOCUMENT_INTELLIGENCE_KEY)
-document_analysis_client = DocumentAnalysisClient(
-    endpoint=settings.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT, 
-    credential=credential
-)
+# 🆕 CORRECCIÓN: Usar las propiedades de tu config actual
+def get_azure_client():
+    """
+    Configura y retorna el cliente de Azure Document Intelligence
+    """
+    try:
+        # 🆕 Usar las propiedades con fallback de tu config
+        endpoint = settings.document_intelligence_endpoint
+        key = settings.document_intelligence_key
+        
+        if not endpoint or not key:
+            logger.error("❌ Faltan credenciales de Azure Document Intelligence")
+            raise ValueError("Azure Document Intelligence credentials not configured")
+        
+        # 🆕 Asegurar que el endpoint tenga el formato correcto
+        if not endpoint.startswith('https://'):
+            endpoint = f'https://{endpoint}'
+        
+        # 🆕 Asegurar que no termine con /
+        endpoint = endpoint.rstrip('/')
+        
+        logger.info(f"🔧 Configurando Azure DI con endpoint: {endpoint[:50]}...")  # Log parcial por seguridad
+        
+        credential = AzureKeyCredential(key)
+        client = DocumentAnalysisClient(
+            endpoint=endpoint, 
+            credential=credential
+        )
+        
+        # 🆕 Test de conexión básico
+        logger.info("✅ Cliente Azure Document Intelligence configurado correctamente")
+        return client
+        
+    except Exception as e:
+        logger.error(f"❌ Error configurando cliente Azure: {e}")
+        raise
+
+# 🆕 Obtener cliente una sola vez
+try:
+    document_analysis_client = get_azure_client()
+    logger.info("✅ Azure Document Intelligence inicializado correctamente")
+except Exception as e:
+    logger.error(f"❌ Error inicializando Azure Document Intelligence: {e}")
+    document_analysis_client = None
 
 def process_image(upload_files):
     """
     Procesa una o múltiples imágenes usando Azure Document Intelligence
     """
     try:
+        # Verificar que el cliente esté disponible
+        if document_analysis_client is None:
+            logger.error("❌ Cliente Azure no disponible")
+            return []
+        
         # Si es una lista de archivos (multipágina)
         if isinstance(upload_files, list):
             logger.info(f"📄 Procesando documento multipágina con {len(upload_files)} páginas")
@@ -46,7 +89,7 @@ def process_single_document(upload_file):
         
         logger.info(f"📊 Analizando documento individual: {len(file_content)} bytes")
         
-        # Analizar el documento con Azure Document Intelligence
+        # 🆕 Usar el cliente global
         poller = document_analysis_client.begin_analyze_document(
             "prebuilt-invoice",  # Modelo para facturas
             document=file_content
@@ -73,53 +116,45 @@ def process_multipage_document(upload_files):
     Procesa múltiples archivos como un documento multipágina
     """
     try:
-        # Leer todos los archivos y combinarlos
-        document_pages = []
-        
-        for upload_file in upload_files:
-            file_content = upload_file.file.read()
-            if file_content:
-                document_pages.append(file_content)
-                # Resetear el archivo para lectura posterior
-                upload_file.file.seek(0)
-        
-        if not document_pages:
-            logger.error("❌ No hay contenido en los archivos multipágina")
-            return []
-        
-        logger.info(f"📊 Analizando documento multipágina con {len(document_pages)} páginas")
-        
-        # Para documentos multipágina, necesitamos usar un enfoque diferente
-        # Azure DI puede procesar PDFs multipágina, pero para imágenes separadas
-        # necesitamos combinarlas o procesarlas individualmente
-        
-        # 🆕 ENFOQUE CORREGIDO: Procesar cada página individualmente pero mantener la relación
+        # 🆕 ENFOQUE CORREGIDO: Procesar cada página individualmente
         all_processed_data = []
         
-        for i, page_content in enumerate(document_pages):
+        for i, upload_file in enumerate(upload_files):
             try:
-                logger.info(f"🔍 Procesando página {i + 1} de {len(document_pages)}")
+                logger.info(f"🔍 Procesando página {i + 1} de {len(upload_files)}: {upload_file.filename}")
                 
+                # Leer contenido del archivo
+                file_content = upload_file.file.read()
+                
+                if not file_content:
+                    logger.warning(f"⚠️ Página {i + 1} vacía, saltando...")
+                    continue
+                
+                # 🆕 Usar el cliente global
                 poller = document_analysis_client.begin_analyze_document(
                     "prebuilt-invoice",
-                    document=page_content
+                    document=file_content
                 )
                 
                 result = poller.result()
                 
                 for idx, document in enumerate(result.documents):
-                    doc_data = extract_document_data(document, f"page_{i + 1}")
+                    doc_data = extract_document_data(document, upload_file.filename)
                     if doc_data:
                         doc_data['pagina_numero'] = i + 1
-                        doc_data['total_paginas'] = len(document_pages)
+                        doc_data['total_paginas'] = len(upload_files)
+                        doc_data['es_multipagina'] = len(upload_files) > 1
                         all_processed_data.append(doc_data)
                         logger.info(f"✅ Página {i + 1} - Documento {idx + 1} procesado")
+                        
+                # 🆕 Resetear el archivo para posible reuso
+                upload_file.file.seek(0)
                         
             except Exception as page_error:
                 logger.error(f"❌ Error procesando página {i + 1}: {page_error}")
                 continue
         
-        logger.info(f"📈 Total de documentos extraídos de {len(document_pages)} páginas: {len(all_processed_data)}")
+        logger.info(f"📈 Total de documentos extraídos de {len(upload_files)} páginas: {len(all_processed_data)}")
         return all_processed_data
         
     except Exception as e:
