@@ -487,7 +487,7 @@ async def detect_agrupacion(
             detail=f"Error detectando agrupación: {str(e)}"
         )
 
-# Endpoint especializado para facturas multipágina
+# Endpoint especializado para facturas multipágina - CORREGIDO
 @app.post("/api/upload-multipage", response_model=ProcessResponse)
 async def upload_multipage_invoices(
     background_tasks: BackgroundTasks,
@@ -524,7 +524,7 @@ async def upload_multipage_invoices(
             paginas.sort(key=lambda x: x['numero_pagina'])
             logger.info(f"   📋 {nombre_factura}: {len(paginas)} páginas")
         
-        # 3. Procesar cada grupo de facturas
+        # 3. Procesar cada grupo de facturas - CORREGIDO
         all_processed_data = []
         processing_details = []
         facturas_procesadas = 0
@@ -534,8 +534,23 @@ async def upload_multipage_invoices(
         
         for nombre_factura, paginas_info in grupos_facturas.items():
             try:
-                # Extraer los archivos UploadFile
-                archivos_paginas = [item['archivo'] for item in paginas_info]
+                # 🆕 CORRECCIÓN: Leer contenido y crear nuevos UploadFiles en memoria
+                archivos_paginas = []
+                for item in paginas_info:
+                    # Leer el contenido del archivo
+                    content = await item['archivo'].read()
+                    # Crear un objeto file-like en memoria
+                    file_like = io.BytesIO(content)
+                    # Crear nuevo UploadFile
+                    upload_file = UploadFile(
+                        filename=item['nombre_archivo'],
+                        file=file_like,
+                        content_type=item['archivo'].content_type
+                    )
+                    archivos_paginas.append(upload_file)
+                    # Resetear el archivo original para posible reuso
+                    await item['archivo'].seek(0)
+                
                 numero_paginas = len(archivos_paginas)
                 
                 logger.info(f"🔄 Procesando factura '{nombre_factura}' ({numero_paginas} páginas)")
@@ -546,7 +561,7 @@ async def upload_multipage_invoices(
                     archivo_comprimido = await compress_image(archivo)
                     archivos_comprimidos.append(archivo_comprimido)
                 
-                # Procesar como documento único (multipágina si aplica)
+                # 🆕 CORRECCIÓN: Pasar la lista de archivos comprimidos
                 processed_data = process_image(archivos_comprimidos)
                 
                 if processed_data and len(processed_data) > 0:
