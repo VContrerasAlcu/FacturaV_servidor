@@ -26,7 +26,10 @@ from models import (
     Token, 
     VerificationRequest, 
     PasswordResetRequest,
-    ProcessResponse
+    ProcessResponse,
+    AgrupacionFacturasResponse,
+    FacturaAgrupada,
+    PaginaFacturaInfo
 )
 from email_sender import send_verification_code, send_email, send_email_with_file
 from image_processor import process_image
@@ -130,6 +133,67 @@ def crear_zip_con_excels(archivos_empresas):
     except Exception as e:
         logger.error(f"❌ Error creando archivo ZIP: {e}")
         return None
+
+def detectar_y_agrupar_facturas(files: List[UploadFile]) -> dict:
+    """
+    Detecta y agrupa páginas de la misma factura basándose en patrones de nombres
+    """
+    import re
+    
+    grupos_facturas = {}
+    
+    for file in files:
+        filename = file.filename.lower()
+        encontrado = False
+        
+        # Patrones para detectar páginas de la misma factura
+        patrones = [
+            r'^(.*?)[_\-\s](\d+)\.(jpg|jpeg|png|pdf)$',  # factura_1.pdf
+            r'^(.*?)[_\-\s](pag|page|pg|p|folio|f)[_\-\s]*(\d+)\.(jpg|jpeg|png|pdf)$',  # factura_pag1.pdf
+            r'^(.*?)\((\d+)\)\.(jpg|jpeg|png|pdf)$',  # factura(1).pdf
+            r'^(.*?)[_\-\s](\d+)[_\-\s]*(de|of)[_\-\s]*(\d+)\.(jpg|jpeg|png|pdf)$',  # factura_1_de_3.pdf
+        ]
+        
+        for patron in patrones:
+            match = re.match(patron, filename)
+            if match:
+                grupos = match.groups()
+                nombre_base = grupos[0].rstrip('_- ').replace('_', ' ').replace('-', ' ')
+                
+                if patron == patrones[3]:  # Patrón con "de/of"
+                    numero_pagina = int(grupos[1])
+                    total_paginas = int(grupos[3])
+                else:
+                    numero_pagina = int(grupos[1]) if len(grupos) > 1 else 1
+                    total_paginas = 0  # Desconocido
+                
+                if nombre_base not in grupos_facturas:
+                    grupos_facturas[nombre_base] = []
+                
+                grupos_facturas[nombre_base].append({
+                    'archivo': file,
+                    'numero_pagina': numero_pagina,
+                    'total_paginas': total_paginas,
+                    'nombre_archivo': file.filename
+                })
+                encontrado = True
+                break
+        
+        # Si no coincide con patrones multipágina, tratar como factura individual
+        if not encontrado:
+            nombre_base = filename.rsplit('.', 1)[0].replace('_', ' ').replace('-', ' ')
+            
+            if nombre_base not in grupos_facturas:
+                grupos_facturas[nombre_base] = []
+            
+            grupos_facturas[nombre_base].append({
+                'archivo': file,
+                'numero_pagina': 1,
+                'total_paginas': 1,
+                'nombre_archivo': file.filename
+            })
+    
+    return grupos_facturas
 
 # Rutas de autenticación
 @app.post("/api/login", response_model=Token)
@@ -371,14 +435,250 @@ async def upload_invoice(
             success=False
         )
 
-# Endpoint para procesar múltiples facturas - CORREGIDO
+# Endpoint para detectar agrupación de facturas multipágina
+@app.post("/api/detect-agrupacion", response_model=AgrupacionFacturasResponse)
+async def detect_agrupacion(
+    files: List[UploadFile] = File(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Detecta cómo se agruparán las facturas antes del procesamiento
+    """
+    try:
+        grupos_facturas = detectar_y_agrupar_facturas(files)
+        
+        detalles = []
+        facturas_multipagina = 0
+        
+        for nombre_base, paginas in grupos_facturas.items():
+            # Ordenar páginas por número
+            paginas.sort(key=lambda x: x['numero_pagina'])
+            
+            paginas_info = []
+            for pagina in paginas:
+                total_paginas = pagina['total_paginas'] or len(paginas)
+                paginas_info.append(PaginaFacturaInfo(
+                    nombre_archivo=pagina['nombre_archivo'],
+                    numero_pagina=pagina['numero_pagina'],
+                    total_paginas=total_paginas
+                ))
+            
+            es_multipagina = len(paginas) > 1
+            if es_multipagina:
+                facturas_multipagina += 1
+            
+            detalles.append(FacturaAgrupada(
+                nombre_base=nombre_base,
+                paginas=paginas_info,
+                es_multipagina=es_multipagina
+            ))
+        
+        return AgrupacionFacturasResponse(
+            total_archivos=len(files),
+            total_facturas=len(grupos_facturas),
+            facturas_multipagina=facturas_multipagina,
+            detalles=detalles
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Error detectando agrupación: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error detectando agrupación: {str(e)}"
+        )
+
+# Endpoint especializado para facturas multipágina
+@app.post("/api/upload-multipage", response_model=ProcessResponse)
+async def upload_multipage_invoices(
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Endpoint especializado para facturas multipágina
+    """
+    try:
+        logger.info(f"📑 INICIO PROCESAMIENTO MULTIPÁGINA")
+        logger.info(f"📦 Total archivos recibidos: {len(files)}")
+        
+        if not files:
+            return ProcessResponse(
+                message="No se han subido archivos",
+                success=False
+            )
+        
+        # Validar número máximo de archivos (aumentado para multipágina)
+        max_files = 20
+        if len(files) > max_files:
+            return ProcessResponse(
+                message=f"Máximo {max_files} archivos permitidos",
+                success=False
+            )
+        
+        # 1. Detectar y agrupar facturas
+        grupos_facturas = detectar_y_agrupar_facturas(files)
+        logger.info(f"📂 Facturas detectadas: {len(grupos_facturas)}")
+        
+        # 2. Ordenar páginas dentro de cada factura
+        for nombre_factura, paginas in grupos_facturas.items():
+            paginas.sort(key=lambda x: x['numero_pagina'])
+            logger.info(f"   📋 {nombre_factura}: {len(paginas)} páginas")
+        
+        # 3. Procesar cada grupo de facturas
+        all_processed_data = []
+        processing_details = []
+        facturas_procesadas = 0
+        facturas_fallidas = 0
+        total_paginas_procesadas = 0
+        facturas_multipagina = 0
+        
+        for nombre_factura, paginas_info in grupos_facturas.items():
+            try:
+                # Extraer los archivos UploadFile
+                archivos_paginas = [item['archivo'] for item in paginas_info]
+                numero_paginas = len(archivos_paginas)
+                
+                logger.info(f"🔄 Procesando factura '{nombre_factura}' ({numero_paginas} páginas)")
+                
+                # Comprimir cada página
+                archivos_comprimidos = []
+                for archivo in archivos_paginas:
+                    archivo_comprimido = await compress_image(archivo)
+                    archivos_comprimidos.append(archivo_comprimido)
+                
+                # Procesar como documento único (multipágina si aplica)
+                processed_data = process_image(archivos_comprimidos)
+                
+                if processed_data and len(processed_data) > 0:
+                    # Agregar información de multipágina a cada elemento
+                    for data_item in processed_data:
+                        data_item['nombre_factura'] = nombre_factura
+                        data_item['numero_paginas'] = numero_paginas
+                        data_item['paginas_procesadas'] = numero_paginas
+                        data_item['es_multipagina'] = numero_paginas > 1
+                        data_item['archivos_origen'] = [item['nombre_archivo'] for item in paginas_info]
+                        data_item['timestamp_procesamiento'] = datetime.now().isoformat()
+                    
+                    all_processed_data.extend(processed_data)
+                    facturas_procesadas += 1
+                    total_paginas_procesadas += numero_paginas
+                    
+                    if numero_paginas > 1:
+                        facturas_multipagina += 1
+                    
+                    processing_details.append(
+                        f"✓ {nombre_factura}: {len(processed_data)} factura(s) extraída(s) de {numero_paginas} página(s)"
+                    )
+                    
+                    logger.info(f"✅ Factura '{nombre_factura}' procesada exitosamente")
+                else:
+                    facturas_fallidas += 1
+                    processing_details.append(f"✗ {nombre_factura}: no se pudieron extraer datos")
+                    logger.warning(f"⚠️ No se pudieron extraer datos de la factura: {nombre_factura}")
+                    
+            except Exception as e:
+                facturas_fallidas += 1
+                processing_details.append(f"✗ {nombre_factura}: error - {str(e)}")
+                logger.error(f"❌ Error procesando factura {nombre_factura}: {e}")
+        
+        # 4. Verificar resultados
+        if not all_processed_data:
+            return ProcessResponse(
+                message="No se pudieron procesar ninguna de las facturas",
+                success=False,
+                details=processing_details
+            )
+        
+        # 5. Generar Excel por empresa
+        archivos_empresas = generate_excel(all_processed_data)
+        
+        if not archivos_empresas:
+            return ProcessResponse(
+                message="Error generando los archivos de resultados",
+                success=False,
+                details=processing_details
+            )
+        
+        # 6. Crear ZIP
+        zip_file = crear_zip_con_excels(archivos_empresas)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        zip_filename = f"facturas_multipagina_{timestamp}.zip"
+        
+        # 7. Preparar y enviar email
+        email_subject = f"Facturas multipágina procesadas ({facturas_procesadas}) - FacturaV"
+        
+        email_content = f"""
+        <h3>Procesamiento de facturas multipágina completado</h3>
+        <p><strong>Resultado:</strong> {facturas_procesadas} factura(s) procesada(s)</p>
+        <p><strong>Facturas multipágina:</strong> {facturas_multipagina}</p>
+        <p><strong>Total de páginas procesadas:</strong> {total_paginas_procesadas}</p>
+        <p><strong>Fecha de procesamiento:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+        
+        <h4>Detalles del procesamiento:</h4>
+        <ul>
+        """
+        
+        for detail in processing_details:
+            email_content += f"<li>{detail}</li>"
+        
+        email_content += """
+        </ul>
+        <p>Adjunto encontrará el archivo ZIP con los Excel organizados por empresa.</p>
+        """
+        
+        # Enviar email
+        background_tasks.add_task(
+            send_email_with_file,
+            current_user['email'],
+            email_subject,
+            email_content,
+            zip_file,
+            zip_filename
+        )
+        
+        return ProcessResponse(
+            message=f"Procesamiento completado: {facturas_procesadas} factura(s) procesada(s)",
+            success=True,
+            details=processing_details,
+            processed_count=facturas_procesadas,
+            failed_count=facturas_fallidas,
+            total_files=len(files),
+            unique_files_processed=len(grupos_facturas),
+            total_elements=len(all_processed_data),
+            empresas_procesadas=len(archivos_empresas),
+            facturas_totales=facturas_procesadas,
+            facturas_multipagina=facturas_multipagina
+        )
+        
+    except Exception as e:
+        logger.error(f"💥 Error crítico procesando facturas multipágina: {e}")
+        return ProcessResponse(
+            message=f"Error procesando las facturas multipágina: {str(e)}",
+            success=False
+        )
+
+# Endpoint principal que detecta automáticamente si hay facturas multipágina
 @app.post("/api/upload-invoices", response_model=ProcessResponse)
 async def upload_invoices(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     current_user: dict = Depends(get_current_user)
 ):
+    """
+    Endpoint principal que detecta automáticamente si hay facturas multipágina
+    """
     try:
+        # Detectar si hay facturas multipágina
+        grupos_facturas = detectar_y_agrupar_facturas(files)
+        tiene_multipagina = any(len(paginas) > 1 for paginas in grupos_facturas.values())
+        
+        if tiene_multipagina:
+            logger.info("🔍 Se detectaron facturas multipágina, usando procesamiento especializado")
+            return await upload_multipage_invoices(background_tasks, files, current_user)
+        
+        # Si no hay multipágina, continuar con procesamiento normal
+        logger.info("📄 No se detectaron facturas multipágina, usando procesamiento normal")
+        
         # DEBUG: Información inicial
         logger.info(f"🎯 INICIO PROCESAMIENTO MÚLTIPLE")
         logger.info(f"📦 Número de archivos recibidos: {len(files)}")
@@ -623,7 +923,9 @@ async def health_check():
             "multiple_upload": True,
             "image_compression": True,
             "max_file_size_mb": 4,
-            "max_files_per_request": 10
+            "max_files_per_request": 10,
+            "multipage_detection": True,
+            "multipage_processing": True
         }
     }
 
@@ -640,7 +942,9 @@ async def system_info(current_user: dict = Depends(get_current_user)):
             "multiple_upload": True,
             "image_compression": True,
             "max_files": 10,
-            "max_file_size": "4MB"
+            "max_file_size": "4MB",
+            "multipage_support": True,
+            "automatic_grouping": True
         }
     }
 
@@ -653,6 +957,8 @@ async def test_endpoint():
         "endpoints_available": [
             "/api/upload-invoice",
             "/api/upload-invoices", 
+            "/api/upload-multipage",
+            "/api/detect-agrupacion",
             "/api/login",
             "/api/register",
             "/api/verify-code"
