@@ -387,18 +387,17 @@ async def upload_invoice(
         )
 
 # Endpoint para procesar múltiples facturas - CON SOPORTE MULTIPÁGINA
+# En main.py - Endpoint /api/upload-invoices COMPLETO y MODIFICADO
 @app.post("/api/upload-invoices", response_model=ProcessResponse)
 async def upload_invoices(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
-    multipage_groups: List[str] = Form(None),  # Nuevo parámetro para grupos multipágina
     current_user: dict = Depends(get_current_user)
 ):
     try:
         # DEBUG: Información inicial
-        logger.info(f"🎯 INICIO PROCESAMIENTO MÚLTIPLE")
+        logger.info(f"🎯 INICIO PROCESAMIENTO MÚLTIPLE CON PDFs")
         logger.info(f"📦 Número de archivos recibidos: {len(files)}")
-        logger.info(f"📄 Grupos multipágina: {multipage_groups}")
         
         # Validar que se hayan subido archivos
         if not files:
@@ -417,13 +416,17 @@ async def upload_invoices(
                 success=False
             )
         
-        # Validar tipos de archivo
+        # ✅ VALIDAR TIPOS DE ARCHIVO ACTUALIZADOS (PDF + imágenes)
         invalid_files = []
         valid_files = []
         
         for i, file in enumerate(files):
             logger.info(f"📄 Archivo {i+1}: {file.filename} - Tipo: {file.content_type}")
-            if file.content_type and file.content_type.startswith('image/'):
+            
+            # ✅ ACEPTAR PDFs Y IMÁGENES
+            if (file.content_type and 
+                (file.content_type.startswith('image/') or 
+                 file.content_type == 'application/pdf')):
                 valid_files.append(file)
             else:
                 invalid_files.append(file.filename)
@@ -434,125 +437,75 @@ async def upload_invoices(
         if not valid_files:
             logger.error("❌ Ningún archivo válido encontrado")
             return ProcessResponse(
-                message="Ninguno de los archivos es una imagen válida",
+                message="Los archivos deben ser imágenes (JPEG, PNG) o PDFs",
                 success=False
             )
         
         logger.info(f"✅ Archivos válidos para procesar: {len(valid_files)}")
+        logger.info(f"📊 Tipos de archivos: {[f.content_type for f in valid_files]}")
         
-        # PROCESAMIENTO MEJORADO PARA MULTIPÁGINA
+        # ✅ PROCESAMIENTO SIMPLIFICADO - CADA ARCHIVO ES UNA FACTURA INDEPENDIENTE
         all_processed_data = []
         processed_count = 0
         failed_count = 0
         processing_details = []
 
-        # Agrupar archivos por grupo multipágina
-        grouped_files = {}
-        
         for i, file in enumerate(valid_files):
-            group_name = multipage_groups[i] if multipage_groups and i < len(multipage_groups) else f"single_{i}"
-            
-            if group_name not in grouped_files:
-                grouped_files[group_name] = []
-            
-            grouped_files[group_name].append(file)
-        
-        logger.info(f"📂 Archivos agrupados: {len(grouped_files)} grupos")
-        for group_name, group_files in grouped_files.items():
-            logger.info(f"   📁 Grupo '{group_name}': {len(group_files)} archivos")
-
-        # Procesar cada grupo
-        for group_name, group_files in grouped_files.items():
             try:
-                if group_name.startswith('multipage_') and len(group_files) > 1:
-                    # Procesar como documento multipágina
-                    logger.info(f"🔄 Procesando grupo multipágina '{group_name}' con {len(group_files)} páginas")
+                logger.info(f"🔄 Procesando archivo {i+1}/{len(valid_files)}: {file.filename}")
+                
+                # ✅ DETERMINAR TIPO DE ARCHIVO
+                file_type = "PDF" if file.content_type == 'application/pdf' else "Imagen"
+                logger.info(f"   📋 Tipo: {file_type}")
+                
+                # ✅ PROCESAR DIRECTAMENTE CON AZURE DOCUMENT INTELLIGENCE
+                # Azure DI soporta tanto imágenes como PDFs
+                processed_data = process_image(file)
+                
+                if processed_data and len(processed_data) > 0:
+                    # ✅ AGREGAR INFORMACIÓN METADATA A CADA ELEMENTO
+                    for data_item in processed_data:
+                        data_item['archivo_origen'] = file.filename
+                        data_item['tipo_archivo'] = file_type.lower()
+                        data_item['indice_procesamiento'] = i + 1
+                        data_item['timestamp_procesamiento'] = datetime.now().isoformat()
                     
-                    processed_group_data = []
-                    
-                    for file in group_files:
-                        try:
-                            compressed_file = await compress_image(file)
-                            processed_data = process_image(compressed_file)
-                            
-                            if processed_data:
-                                for data_item in processed_data:
-                                    data_item['archivo_origen'] = file.filename
-                                    data_item['grupo_multipagina'] = group_name
-                                    data_item['timestamp_procesamiento'] = datetime.now().isoformat()
-                                
-                                processed_group_data.extend(processed_data)
-                                logger.info(f"✅ Página {file.filename} procesada exitosamente")
-                            else:
-                                logger.warning(f"⚠️ No se pudieron extraer datos de la página: {file.filename}")
-                                
-                        except Exception as e:
-                            logger.error(f"❌ Error procesando página {file.filename}: {e}")
-                            processing_details.append(f"✗ Página {file.filename}: error - {str(e)}")
-                    
-                    if processed_group_data:
-                        # Combinar datos de múltiples páginas
-                        combined_data = combine_multipage_data(processed_group_data, group_name)
-                        all_processed_data.extend(combined_data)
-                        processed_count += 1
-                        processing_details.append(f"✓ Grupo {group_name}: {len(group_files)} páginas procesadas → {len(combined_data)} elementos")
-                        logger.info(f"✅ Grupo multipágina '{group_name}' procesado: {len(combined_data)} elementos")
-                    else:
-                        failed_count += 1
-                        processing_details.append(f"✗ Grupo {group_name}: no se pudieron extraer datos de ninguna página")
-                        logger.warning(f"⚠️ Grupo multipágina '{group_name}' falló completamente")
-                        
+                    all_processed_data.extend(processed_data)
+                    processed_count += 1
+                    processing_details.append(f"✓ {file.filename}: {len(processed_data)} factura(s) procesada(s) [{file_type}]")
+                    logger.info(f"✅ {file_type} {file.filename} procesado exitosamente - {len(processed_data)} elementos")
                 else:
-                    # Procesar como documento individual
-                    for file in group_files:
-                        try:
-                            logger.info(f"🔄 Procesando archivo individual: {file.filename}")
-                            
-                            compressed_file = await compress_image(file)
-                            processed_data = process_image(compressed_file)
-                            
-                            if processed_data:
-                                for data_item in processed_data:
-                                    data_item['archivo_origen'] = file.filename
-                                    data_item['timestamp_procesamiento'] = datetime.now().isoformat()
-                                
-                                all_processed_data.extend(processed_data)
-                                processed_count += 1
-                                processing_details.append(f"✓ {file.filename}: {len(processed_data)} elementos procesados")
-                                logger.info(f"✅ Archivo individual {file.filename} procesado: {len(processed_data)} elementos")
-                            else:
-                                failed_count += 1
-                                processing_details.append(f"✗ {file.filename}: no se pudieron extraer datos")
-                                logger.warning(f"⚠️ No se pudieron extraer datos del archivo: {file.filename}")
-                                
-                        except Exception as e:
-                            failed_count += 1
-                            error_msg = str(e)
-                            if "too large" in error_msg.lower():
-                                error_msg = "imagen demasiado grande (se intentó comprimir pero aún excede el límite)"
-                            processing_details.append(f"✗ {file.filename}: error - {error_msg}")
-                            logger.error(f"❌ Error procesando archivo {file.filename}: {e}")
-                            
+                    failed_count += 1
+                    processing_details.append(f"✗ {file.filename}: no se pudieron extraer datos [{file_type}]")
+                    logger.warning(f"⚠️ No se pudieron extraer datos del archivo: {file.filename}")
+                    
             except Exception as e:
-                failed_count += len(group_files)
-                processing_details.append(f"✗ Grupo {group_name}: error - {str(e)}")
-                logger.error(f"❌ Error procesando grupo {group_name}: {e}")
+                failed_count += 1
+                error_msg = str(e)
+                
+                # ✅ MEJORES MENSAJES DE ERROR ESPECÍFICOS
+                if "too large" in error_msg.lower():
+                    error_msg = "archivo demasiado grande"
+                elif "timeout" in error_msg.lower():
+                    error_msg = "tiempo de espera agotado al procesar"
+                elif "invalid" in error_msg.lower():
+                    error_msg = "formato de archivo no válido"
+                
+                processing_details.append(f"✗ {file.filename}: error - {error_msg} [{file_type}]")
+                logger.error(f"❌ Error procesando archivo {file.filename}: {e}")
 
-        # VERIFICAR resultados del procesamiento
+        # ✅ VERIFICAR RESULTADOS DEL PROCESAMIENTO
         logger.info(f"📊 RESULTADO DEL PROCESAMIENTO:")
-        logger.info(f"   • Elementos procesados: {len(all_processed_data)}")
-        logger.info(f"   • Grupos exitosos: {processed_count}")
-        logger.info(f"   • Grupos fallidos: {failed_count}")
-        logger.info(f"   • Total archivos: {len(valid_files)}")
+        logger.info(f"   • Archivos procesados exitosamente: {processed_count}")
+        logger.info(f"   • Archivos fallidos: {failed_count}")
+        logger.info(f"   • Total elementos extraídos: {len(all_processed_data)}")
+        logger.info(f"   • Total archivos recibidos: {len(valid_files)}")
         
-        # Verificar archivos únicos procesados
-        archivos_unicos = set()
-        for data in all_processed_data:
-            if 'archivo_origen' in data:
-                archivos_unicos.add(data['archivo_origen'])
-        
-        logger.info(f"📁 Archivos únicos con datos: {len(archivos_unicos)}")
-        logger.info(f"📂 Lista: {list(archivos_unicos)}")
+        # ✅ ESTADÍSTICAS POR TIPO DE ARCHIVO
+        pdf_count = len([f for f in valid_files if f.content_type == 'application/pdf'])
+        image_count = len([f for f in valid_files if f.content_type and f.content_type.startswith('image/')])
+        logger.info(f"   • PDFs procesados: {pdf_count}")
+        logger.info(f"   • Imágenes procesadas: {image_count}")
         
         # Verificar si se procesó al menos una factura
         if not all_processed_data:
@@ -563,8 +516,8 @@ async def upload_invoices(
                 details=processing_details
             )
         
-        # Generar archivos Excel por empresa
-        logger.info(f"📊 Generando Excel para {len(all_processed_data)} elementos...")
+        # ✅ GENERAR ARCHIVOS EXCEL POR EMPRESA
+        logger.info(f"📊 Generando Excel para {len(all_processed_data)} elementos procesados...")
         archivos_empresas = generate_excel(all_processed_data)
         
         if not archivos_empresas:
@@ -575,7 +528,7 @@ async def upload_invoices(
                 details=processing_details
             )
         
-        # Verificar los Excel generados
+        # ✅ VERIFICAR LOS EXCEL GENERADOS
         total_empresas = len(archivos_empresas)
         total_facturas = sum(empresa['cantidad_facturas'] for empresa in archivos_empresas)
         
@@ -584,7 +537,7 @@ async def upload_invoices(
         for i, empresa in enumerate(archivos_empresas):
             logger.info(f"   📊 Empresa {i+1}: {empresa['empresa']} - {empresa['cantidad_facturas']} facturas")
         
-        # Crear archivo ZIP con todos los Excel
+        # ✅ CREAR ARCHIVO ZIP CON TODOS LOS EXCEL
         zip_file = crear_zip_con_excels(archivos_empresas)
         
         if not zip_file:
@@ -604,20 +557,18 @@ async def upload_invoices(
         else:
             zip_filename = f"facturas_empresas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
         
-        # Preparar mensaje de resultado
-        grupos_multipagina = len([g for g in grouped_files.keys() if g.startswith('multipage_') and len(grouped_files[g]) > 1])
-        
-        if grupos_multipagina > 0:
-            result_message = f"Procesamiento completado: {processed_count} documento(s) procesado(s)"
-            if grupos_multipagina > 0:
-                result_message += f" ({grupos_multipagina} multipágina)"
+        # ✅ PREPARAR MENSAJE DE RESULTADO MEJORADO
+        if pdf_count > 0 and image_count > 0:
+            result_message = f"Procesamiento completado: {processed_count} archivos procesados ({pdf_count} PDFs, {image_count} imágenes)"
+        elif pdf_count > 0:
+            result_message = f"Procesamiento completado: {processed_count} PDFs procesados"
         else:
-            result_message = f"Procesamiento completado: {processed_count} factura(s) procesada(s)"
+            result_message = f"Procesamiento completado: {processed_count} imágenes procesadas"
         
         if failed_count > 0:
-            result_message += f", {failed_count} documento(s) fallaron"
+            result_message += f", {failed_count} archivos fallaron"
         
-        # Preparar contenido del email
+        # ✅ PREPARAR CONTENIDO DEL EMAIL MEJORADO
         email_subject = f"Facturas procesadas ({processed_count}) - FacturaV"
         
         email_content = f"""
@@ -628,8 +579,13 @@ async def upload_invoices(
         <p><strong>Facturas procesadas:</strong> {total_facturas}</p>
         """
         
-        if grupos_multipagina > 0:
-            email_content += f"<p><strong>Documentos multipágina:</strong> {grupos_multipagina}</p>"
+        if pdf_count > 0 or image_count > 0:
+            email_content += f"<p><strong>Tipos de archivo:</strong>"
+            if pdf_count > 0:
+                email_content += f" {pdf_count} PDF(s)"
+            if image_count > 0:
+                email_content += f" {image_count} imagen(es)"
+            email_content += "</p>"
         
         email_content += f"""
         <p><strong>Fecha de procesamiento:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
@@ -654,9 +610,10 @@ async def upload_invoices(
         email_content += """
         </ul>
         <p>Adjunto encontrará el archivo ZIP con los Excel organizados por empresa.</p>
+        <p><em>Nota: Las facturas multipágina fueron convertidas a PDF antes del procesamiento para mejor extracción.</em></p>
         """
         
-        # Enviar por email (en background)
+        # ✅ ENVIAR POR EMAIL (EN BACKGROUND)
         background_tasks.add_task(
             send_email_with_file,
             current_user['email'], 
@@ -675,17 +632,17 @@ async def upload_invoices(
             processed_count=processed_count,
             failed_count=failed_count,
             total_files=len(valid_files),
-            unique_files_processed=len(archivos_unicos),
+            pdf_files=pdf_count,
+            image_files=image_count,
             total_elements=len(all_processed_data),
             empresas_procesadas=total_empresas,
-            facturas_totales=total_facturas,
-            grupos_multipagina=grupos_multipagina
+            facturas_totales=total_facturas
         )
         
     except Exception as e:
-        logger.error(f"💥 Error crítico procesando múltiples facturas: {e}")
+        logger.error(f"💥 Error crítico procesando facturas: {e}")
         return ProcessResponse(
-            message=f"Error procesando las imágenes: {str(e)}",
+            message=f"Error procesando los archivos: {str(e)}",
             success=False
         )
 
