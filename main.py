@@ -109,6 +109,40 @@ async def compress_image(file: UploadFile, max_size_mb: int = 4, quality: int = 
         # En caso de error, devolver el archivo original
         file.file.seek(0)
         return file
+def crear_zip_con_excels_y_pdfs(archivos_empresas, files_data):
+    """
+    Crea un archivo ZIP con todos los Excel de las empresas Y los PDFs originales
+    """
+    try:
+        zip_buffer = io.BytesIO()
+        
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            # 1. AGREGAR EXCELS DE EMPRESAS
+            for archivo_empresa in archivos_empresas:
+                empresa_nombre = archivo_empresa['empresa']
+                excel_data = archivo_empresa['archivo']
+                nombre_archivo = f"EXCEL_{empresa_nombre.replace(' ', '_')}_facturas.xlsx"
+                zip_file.writestr(nombre_archivo, excel_data)
+            
+            # 2. AGREGAR PDFs ORIGINALES
+            for file_data in files_data:
+                filename = file_data['filename']
+                content = file_data['content']
+                # Crear nombre seguro para el archivo
+                safe_name = "".join(c for c in filename if c.isalnum() or c in (' ', '-', '_', '.'))
+                if not safe_name:
+                    safe_name = f"documento_{hash(filename) % 10000:04d}"
+                
+                zip_file.writestr(f"ORIGINAL_{safe_name}", content)
+                
+            logger.info(f"✅ ZIP creado con {len(archivos_empresas)} Excel(s) y {len(files_data)} archivo(s) original(es)")
+        
+        zip_buffer.seek(0)
+        return zip_buffer
+        
+    except Exception as e:
+        logger.error(f"❌ Error creando archivo ZIP con PDFs: {e}")
+        return None
 
 def crear_zip_con_excels(archivos_empresas):
     """
@@ -386,7 +420,7 @@ async def upload_invoice(
             success=False
         )
 
-# Endpoint para procesar múltiples facturas - CON SOPORTE PARA PDFs Y MEJOR MANEJO DE ERRORES
+# Endpoint para procesar múltiples facturas - CON SOPORTE PARA PDFs Y ENVÍO DE ARCHIVOS ORIGINALES
 @app.post("/api/upload-invoices", response_model=ProcessResponse)
 async def upload_invoices(
     background_tasks: BackgroundTasks,
@@ -395,7 +429,7 @@ async def upload_invoices(
 ):
     try:
         # DEBUG: Información inicial
-        logger.info(f"🎯 INICIO PROCESAMIENTO MÚLTIPLE MEJORADO")
+        logger.info(f"🎯 INICIO PROCESAMIENTO MÚLTIPLE MEJORADO CON PDFs ORIGINALES")
         logger.info(f"📦 Número de archivos recibidos: {len(files)}")
         
         # Validar que se hayan subido archivos
@@ -443,6 +477,22 @@ async def upload_invoices(
         logger.info(f"✅ Archivos válidos para procesar: {len(valid_files)}")
         logger.info(f"📊 Tipos de archivos: {[f.content_type for f in valid_files]}")
         
+        # GUARDAR CONTENIDO ORIGINAL DE LOS ARCHIVOS PARA INCLUIR EN EL ZIP
+        files_data = []
+        for file in valid_files:
+            try:
+                content = await file.read()
+                files_data.append({
+                    'filename': file.filename,
+                    'content': content,
+                    'content_type': file.content_type
+                })
+                # Resetear el archivo para procesamiento
+                await file.seek(0)
+                logger.info(f"💾 Guardado contenido original de: {file.filename} ({len(content)} bytes)")
+            except Exception as e:
+                logger.error(f"❌ Error leyendo archivo {file.filename}: {e}")
+
         # PROCESAMIENTO MEJORADO CON MANEJO DE FALLOS
         all_processed_data = []
         processed_count = 0
@@ -575,8 +625,8 @@ async def upload_invoices(
         for i, empresa in enumerate(archivos_empresas):
             logger.info(f"   📊 Empresa {i+1}: {empresa['empresa']} - {empresa['cantidad_facturas']} facturas")
         
-        # CREAR ARCHIVO ZIP CON TODOS LOS EXCEL
-        zip_file = crear_zip_con_excels(archivos_empresas)
+        # CREAR ARCHIVO ZIP CON TODOS LOS EXCEL Y PDFs ORIGINALES
+        zip_file = crear_zip_con_excels_y_pdfs(archivos_empresas, files_data)
         
         if not zip_file:
             logger.error("❌ Error creando archivo ZIP")
@@ -651,16 +701,23 @@ async def upload_invoices(
         for empresa in archivos_empresas:
             email_content += f"<li><strong>{empresa['empresa']}</strong>: {empresa['cantidad_facturas']} factura(s)</li>"
         
-        email_content += """
+        email_content += f"""
+        </ul>
+        
+        <h4>Contenido del archivo ZIP:</h4>
+        <ul>
+            <li><strong>EXCEL_*.xlsx:</strong> Archivos Excel organizados por empresa</li>
+            <li><strong>ORIGINAL_*:</strong> Archivos originales subidos (PDFs/Imágenes)</li>
         </ul>
         
         <h4>Notas importantes:</h4>
         <ul>
             <li><strong>Mejoradas:</strong> Azure extrajo datos clave automáticamente</li>
             <li><strong>Básicas:</strong> Se usaron datos mínimos (revisar manualmente)</li>
+            <li><strong>Archivos originales:</strong> Incluidos para referencia y verificación</li>
         </ul>
         
-        <p>Adjunto encontrará el archivo ZIP con los Excel organizados por empresa.</p>
+        <p>Adjunto encontrará el archivo ZIP con los Excel organizados por empresa Y los archivos originales.</p>
         """
         
         # ENVIAR POR EMAIL (EN BACKGROUND)
@@ -673,7 +730,7 @@ async def upload_invoices(
             zip_filename
         )
         
-        logger.info("✅ Email programado para envío en background")
+        logger.info("✅ Email programado para envío en background con Excel + archivos originales")
         
         return ProcessResponse(
             message=result_message,
@@ -697,6 +754,61 @@ async def upload_invoices(
             message=f"Error procesando los archivos: {str(e)}",
             success=False
         )
+
+# AGREGAR LA FUNCIÓN AUXILIAR PARA CREAR EL ZIP
+def crear_zip_con_excels_y_pdfs(archivos_empresas, files_data):
+    """
+    Crea un archivo ZIP con todos los Excel de las empresas Y los archivos originales
+    """
+    try:
+        zip_buffer = io.BytesIO()
+        
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            # 1. AGREGAR EXCELS DE EMPRESAS
+            for archivo_empresa in archivos_empresas:
+                empresa_nombre = archivo_empresa['empresa']
+                excel_data = archivo_empresa['archivo']
+                # Crear nombre seguro para el archivo
+                safe_empresa_name = "".join(c for c in empresa_nombre if c.isalnum() or c in (' ', '-', '_'))
+                if not safe_empresa_name:
+                    safe_empresa_name = f"Empresa_{hash(empresa_nombre) % 10000:04d}"
+                
+                nombre_archivo = f"EXCEL_{safe_empresa_name}_facturas.xlsx"
+                zip_file.writestr(nombre_archivo, excel_data)
+                logger.info(f"📊 Excel agregado al ZIP: {nombre_archivo}")
+            
+            # 2. AGREGAR ARCHIVOS ORIGINALES (PDFs/Imágenes)
+            for file_data in files_data:
+                filename = file_data['filename']
+                content = file_data['content']
+                content_type = file_data['content_type']
+                
+                # Crear nombre seguro para el archivo
+                safe_name = "".join(c for c in filename if c.isalnum() or c in (' ', '-', '_', '.'))
+                if not safe_name:
+                    safe_name = f"documento_{hash(filename) % 10000:04d}"
+                
+                # Determinar extensión basada en content_type
+                extension = ".pdf" if content_type == 'application/pdf' else ".jpg"
+                if '.' in safe_name:
+                    # Mantener extensión original si es segura
+                    pass
+                else:
+                    safe_name += extension
+                
+                nombre_archivo = f"ORIGINAL_{safe_name}"
+                zip_file.writestr(nombre_archivo, content)
+                logger.info(f"📎 Archivo original agregado al ZIP: {nombre_archivo} ({len(content)} bytes)")
+                
+            logger.info(f"✅ ZIP creado con {len(archivos_empresas)} Excel(s) y {len(files_data)} archivo(s) original(es)")
+        
+        zip_buffer.seek(0)
+        return zip_buffer
+        
+    except Exception as e:
+        logger.error(f"❌ Error creando archivo ZIP con archivos originales: {e}")
+        return None
+    
 
 @app.post("/api/debug-azure-processing")
 async def debug_azure_processing(
