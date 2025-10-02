@@ -1,7 +1,7 @@
 import pandas as pd
 from io import BytesIO
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils.dataframe import dataframe_to_rows
 import logging
 from datetime import datetime
@@ -10,7 +10,6 @@ from datetime import datetime
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# excel_generator.py - Función generate_excel corregida
 def generate_excel(processed_data_list):
     """
     Genera MÚLTIPLES archivos Excel agrupados por empresa
@@ -130,7 +129,7 @@ def generar_excel_empresa(empresa_nombre, facturas_empresa):
         if workbook.sheetnames:
             workbook.remove(workbook.active)
         
-        # Estilos mejorados
+        # Estilos mejorados - ✅ IMPORTACIONES CORREGIDAS
         header_font = Font(bold=True, color="FFFFFF", size=12)
         header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
         total_font = Font(bold=True, size=14, color="2E74B5")
@@ -138,11 +137,13 @@ def generar_excel_empresa(empresa_nombre, facturas_empresa):
         success_font = Font(color="00B050", italic=True)
         normal_font = Font(size=10)
         
-        # Bordes
-        thin_border = Border(left=Side(style='thin'), 
-                           right=Side(style='thin'), 
-                           top=Side(style='thin'), 
-                           bottom=Side(style='thin'))
+        # Bordes - ✅ DEFINIDOS CORRECTAMENTE
+        thin_border = Border(
+            left=Side(style='thin'), 
+            right=Side(style='thin'), 
+            top=Side(style='thin'), 
+            bottom=Side(style='thin')
+        )
         
         money_format = '#,##0.00€'
         date_format = 'dd/mm/yyyy'
@@ -624,7 +625,6 @@ def generar_excel_empresa(empresa_nombre, facturas_empresa):
         except Exception as fallback_error:
             logger.error(f"❌ Error incluso en fallback: {fallback_error}")
             return None
-        
 
 def calcular_resumen_iva_empresa(facturas_empresa):
     """
