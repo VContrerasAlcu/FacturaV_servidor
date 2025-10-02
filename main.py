@@ -514,8 +514,16 @@ async def upload_invoices(
                 pages.sort(key=lambda x: x['page_number'])
                 logger.info(f"🔄 Convirtiendo grupo {group_id} con {len(pages)} páginas a PDF único")
                 
+                # Preparar archivos para conversión
+                files_for_conversion = []
+                for page in pages:
+                    # Crear UploadFile temporal para cada página
+                    temp_file = UploadFile(filename=page['filename'])
+                    temp_file.file = io.BytesIO(page['content'])
+                    files_for_conversion.append(temp_file)
+                
                 # Convertir el grupo completo a un solo PDF
-                pdf_bytes = await convert_images_to_pdf([page['file_object'] for page in pages])
+                pdf_bytes = await convert_images_to_pdf(files_for_conversion)
                 
                 original_name = pages[0]['original_name']
                 pdf_filename = f"MULTIPAGE_{original_name}.pdf"
@@ -536,6 +544,8 @@ async def upload_invoices(
                 logger.error(f"❌ Error convirtiendo grupo multipágina {group_id}: {e}")
                 # Fallback: enviar páginas individualmente
                 for page in pages:
+                    # Resetear el archivo original
+                    page['file_object'].file = io.BytesIO(page['content'])
                     single_files.append(page['file_object'])
                     logger.info(f"🔄 Fallback: página {page['page_number']} del grupo {group_id} enviada individualmente")
         
@@ -560,6 +570,8 @@ async def upload_invoices(
             elif file_type and file_type.startswith('image/'):
                 # Convertir imagen a PDF
                 try:
+                    # Resetear el archivo para la conversión
+                    file.file = io.BytesIO(content)
                     pdf_bytes = await convert_single_image_to_pdf(file)
                     converted_single_pdfs.append({
                         'filename': f"CONVERTED_{file.filename.split('.')[0]}.pdf",
@@ -581,6 +593,14 @@ async def upload_invoices(
                     })
             else:
                 logger.warning(f"⚠️ Tipo de archivo no soportado: {file.filename} ({file_type})")
+                # Tratar como binario genérico
+                pdf_files.append({
+                    'filename': file.filename,
+                    'content': content,
+                    'original_name': file.filename,
+                    'type': 'unknown',
+                    'size_bytes': len(content)
+                })
             
             await file.seek(0)
         
@@ -589,11 +609,8 @@ async def upload_invoices(
         
         # Agregar PDFs multipágina convertidos
         for multipage_pdf in converted_multipage_pdfs:
-            temp_upload_file = UploadFile(
-                filename=multipage_pdf['filename'],
-                file=io.BytesIO(multipage_pdf['content']),
-                content_type='application/pdf'
-            )
+            temp_upload_file = UploadFile(filename=multipage_pdf['filename'])
+            temp_upload_file.file = io.BytesIO(multipage_pdf['content'])
             all_files_to_process.append({
                 'file_object': temp_upload_file,
                 'content': multipage_pdf['content'],
@@ -607,11 +624,8 @@ async def upload_invoices(
         
         # Agregar PDFs simples convertidos
         for single_pdf in converted_single_pdfs:
-            temp_upload_file = UploadFile(
-                filename=single_pdf['filename'],
-                file=io.BytesIO(single_pdf['content']),
-                content_type='application/pdf'
-            )
+            temp_upload_file = UploadFile(filename=single_pdf['filename'])
+            temp_upload_file.file = io.BytesIO(single_pdf['content'])
             all_files_to_process.append({
                 'file_object': temp_upload_file,
                 'content': single_pdf['content'],
@@ -623,11 +637,8 @@ async def upload_invoices(
         
         # Agregar PDFs originales
         for pdf_file in pdf_files:
-            temp_upload_file = UploadFile(
-                filename=pdf_file['filename'],
-                file=io.BytesIO(pdf_file['content']),
-                content_type='application/pdf'
-            )
+            temp_upload_file = UploadFile(filename=pdf_file['filename'])
+            temp_upload_file.file = io.BytesIO(pdf_file['content'])
             all_files_to_process.append({
                 'file_object': temp_upload_file,
                 'content': pdf_file['content'],
@@ -726,30 +737,6 @@ async def upload_invoices(
                 processing_details.append(f"✗ {original_name}: error - {error_msg}")
                 logger.error(f"❌ Error procesando {original_name}: {e}")
 
-        # ... (el resto del código de generación de Excel y envío de email permanece igual)
-        
-        # GUARDAR ARCHIVOS PARA EL ZIP
-        files_data = []
-        
-        # Agregar PDFs multipágina
-        for multipage_pdf in converted_multipage_pdfs:
-            files_data.append({
-                'filename': multipage_pdf['filename'],
-                'content': multipage_pdf['content'],
-                'type': multipage_pdf['type'],
-                'original_name': multipage_pdf['original_name'],
-                'page_count': multipage_pdf['page_count']
-            })
-        
-        # Agregar PDFs simples
-        for single_pdf in converted_single_pdfs + pdf_files:
-            files_data.append({
-                'filename': single_pdf['filename'],
-                'content': single_pdf['content'],
-                'type': single_pdf['type'],
-                'original_name': single_pdf['original_name']
-            })
-        
         # GENERAR ARCHIVOS EXCEL POR EMPRESA
         logger.info(f"📊 Generando Excel para {len(all_processed_data)} elementos procesados...")
         archivos_empresas = generate_excel(all_processed_data)
@@ -771,12 +758,35 @@ async def upload_invoices(
         for i, empresa in enumerate(archivos_empresas):
             logger.info(f"   📊 Empresa {i+1}: {empresa['empresa']} - {empresa['cantidad_facturas']} facturas")
         
+        # PREPARAR ARCHIVOS PARA EL ZIP
+        files_data = []
+        
+        # Agregar PDFs multipágina
+        for multipage_pdf in converted_multipage_pdfs:
+            files_data.append({
+                'filename': multipage_pdf['filename'],
+                'content': multipage_pdf['content'],
+                'type': multipage_pdf['type'],
+                'original_name': multipage_pdf['original_name'],
+                'page_count': multipage_pdf['page_count']
+            })
+        
+        # Agregar PDFs simples
+        for single_pdf in converted_single_pdfs + pdf_files:
+            files_data.append({
+                'filename': single_pdf['filename'],
+                'content': single_pdf['content'],
+                'type': single_pdf['type'],
+                'original_name': single_pdf['original_name']
+            })
+        
         # CREAR ARCHIVO ZIP
         zip_file = crear_zip_con_excels_y_pdfs(archivos_empresas, files_data)
         
         if not zip_file:
             logger.error("❌ Error creando archivo ZIP")
             if archivos_empresas:
+                # Fallback: enviar solo el primer Excel
                 excel_data = archivos_empresas[0]['archivo']
                 empresa_nombre = archivos_empresas[0]['empresa']
                 zip_file = io.BytesIO(excel_data)
@@ -886,7 +896,7 @@ async def upload_invoices(
             message=f"Error procesando los archivos: {str(e)}",
             success=False
         )
-
+        
 # AGREGAR LA FUNCIÓN AUXILIAR PARA CREAR EL ZIP
 def crear_zip_con_excels_y_pdfs(archivos_empresas, files_data):
     """
@@ -913,20 +923,22 @@ def crear_zip_con_excels_y_pdfs(archivos_empresas, files_data):
             for file_data in files_data:
                 filename = file_data['filename']
                 content = file_data['content']
-                content_type = file_data['content_type']
+                
+                # Determinar content_type basado en el tipo de archivo
+                content_type = file_data.get('type', 'unknown')
                 
                 # Crear nombre seguro para el archivo
                 safe_name = "".join(c for c in filename if c.isalnum() or c in (' ', '-', '_', '.'))
                 if not safe_name:
                     safe_name = f"documento_{hash(filename) % 10000:04d}"
                 
-                # Determinar extensión basada en content_type
-                extension = ".pdf" if content_type == 'application/pdf' else ".jpg"
-                if '.' in safe_name:
-                    # Mantener extensión original si es segura
-                    pass
+                # Determinar extensión basada en content_type o nombre original
+                if content_type == 'multipage_pdf' or filename.endswith('.pdf'):
+                    safe_name += '.pdf'
+                elif content_type in ['converted_single', 'image_fallback'] or any(filename.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png']):
+                    safe_name += '.jpg'
                 else:
-                    safe_name += extension
+                    safe_name += '.pdf'  # Default a PDF
                 
                 nombre_archivo = f"ORIGINAL_{safe_name}"
                 zip_file.writestr(nombre_archivo, content)
