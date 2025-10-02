@@ -38,7 +38,7 @@ class PasswordResetRequest(BaseModel):
     code: str
     new_password: str = Field(..., min_length=6)
 
-cclass ProcessResponse(BaseModel):
+class ProcessResponse(BaseModel):
     message: str
     success: bool
     details: Optional[List[str]] = None
