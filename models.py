@@ -38,7 +38,7 @@ class PasswordResetRequest(BaseModel):
     code: str
     new_password: str = Field(..., min_length=6)
 
-class ProcessResponse(BaseModel):
+cclass ProcessResponse(BaseModel):
     message: str
     success: bool
     details: Optional[List[str]] = None
@@ -47,8 +47,9 @@ class ProcessResponse(BaseModel):
     total_files: Optional[int] = None
     pdf_files: Optional[int] = None
     image_files: Optional[int] = None
-    enhanced_extractions: Optional[int] = None  # ✅ NUEVO
-    basic_extractions: Optional[int] = None     # ✅ NUEVO
+    converted_files: Optional[int] = None  # ✅ NUEVO
+    enhanced_extractions: Optional[int] = None
+    basic_extractions: Optional[int] = None
     total_elements: Optional[int] = None
     empresas_procesadas: Optional[int] = None
     facturas_totales: Optional[int] = None

@@ -8,6 +8,7 @@ from datetime import datetime
 from PIL import Image
 import logging
 import zipfile
+from pdf_converter import convert_images_to_pdf, convert_single_image_to_pdf
 
 from config import settings
 from database import init_db, get_user_by_email, save_user, verify_password, hash_password
@@ -421,6 +422,7 @@ async def upload_invoice(
         )
 
 # Endpoint para procesar múltiples facturas - CON SOPORTE PARA PDFs Y ENVÍO DE ARCHIVOS ORIGINALES
+# Endpoint para procesar múltiples facturas - CON CONVERSIÓN DE IMÁGENES A PDF
 @app.post("/api/upload-invoices", response_model=ProcessResponse)
 async def upload_invoices(
     background_tasks: BackgroundTasks,
@@ -428,8 +430,7 @@ async def upload_invoices(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        # DEBUG: Información inicial
-        logger.info(f"🎯 INICIO PROCESAMIENTO MÚLTIPLE MEJORADO CON PDFs ORIGINALES")
+        logger.info(f"🎯 INICIO PROCESAMIENTO CON CONVERSIÓN A PDF")
         logger.info(f"📦 Número de archivos recibidos: {len(files)}")
         
         # Validar que se hayan subido archivos
@@ -449,51 +450,156 @@ async def upload_invoices(
                 success=False
             )
         
-        # Validar tipos de archivo actualizados (PDF + imágenes)
+        # SEPARAR ARCHIVOS POR TIPO
+        pdf_files = []
+        image_files = []
         invalid_files = []
-        valid_files = []
         
-        for i, file in enumerate(files):
-            logger.info(f"📄 Archivo {i+1}: {file.filename} - Tipo: {file.content_type}")
-            
-            # ACEPTAR PDFs Y IMÁGENES
-            if (file.content_type and 
-                (file.content_type.startswith('image/') or 
-                 file.content_type == 'application/pdf')):
-                valid_files.append(file)
+        for file in files:
+            if file.content_type == 'application/pdf':
+                pdf_files.append(file)
+                logger.info(f"📄 PDF detectado: {file.filename}")
+            elif file.content_type and file.content_type.startswith('image/'):
+                image_files.append(file)
+                logger.info(f"🖼️ Imagen detectada: {file.filename} ({file.content_type})")
             else:
                 invalid_files.append(file.filename)
+                logger.warning(f"📛 Archivo inválido: {file.filename} ({file.content_type})")
+        
+        logger.info(f"📊 Archivos recibidos - PDFs: {len(pdf_files)}, Imágenes: {len(image_files)}, Inválidos: {len(invalid_files)}")
         
         if invalid_files:
             logger.warning(f"📛 Archivos inválidos rechazados: {invalid_files}")
         
-        if not valid_files:
+        if not pdf_files and not image_files:
             logger.error("❌ Ningún archivo válido encontrado")
             return ProcessResponse(
                 message="Los archivos deben ser imágenes (JPEG, PNG) o PDFs",
                 success=False
             )
         
-        logger.info(f"✅ Archivos válidos para procesar: {len(valid_files)}")
-        logger.info(f"📊 Tipos de archivos: {[f.content_type for f in valid_files]}")
+        # CONVERTIR IMÁGENES A PDFs
+        converted_pdfs = []
+        conversion_errors = []
         
-        # GUARDAR CONTENIDO ORIGINAL DE LOS ARCHIVOS PARA INCLUIR EN EL ZIP
-        files_data = []
-        for file in valid_files:
+        if image_files:
             try:
-                content = await file.read()
-                files_data.append({
-                    'filename': file.filename,
-                    'content': content,
-                    'content_type': file.content_type
-                })
-                # Resetear el archivo para procesamiento
-                await file.seek(0)
-                logger.info(f"💾 Guardado contenido original de: {file.filename} ({len(content)} bytes)")
+                logger.info(f"🔄 Convirtiendo {len(image_files)} imágenes a PDF...")
+                
+                # Convertir cada imagen individualmente a PDF
+                for image_file in image_files:
+                    try:
+                        logger.info(f"   🔄 Convirtiendo: {image_file.filename}")
+                        pdf_bytes = await convert_single_image_to_pdf(image_file)
+                        
+                        # Crear nombre seguro para el PDF convertido
+                        original_name = image_file.filename
+                        safe_name = "".join(c for c in original_name.split('.')[0] if c.isalnum() or c in (' ', '-', '_'))
+                        if not safe_name:
+                            safe_name = f"imagen_{hash(original_name) % 10000:04d}"
+                        
+                        pdf_filename = f"CONVERTED_{safe_name}.pdf"
+                        
+                        converted_pdfs.append({
+                            'filename': pdf_filename,
+                            'content': pdf_bytes,
+                            'original_name': original_name,
+                            'type': 'converted',
+                            'size_bytes': len(pdf_bytes)
+                        })
+                        logger.info(f"   ✅ Imagen convertida: {original_name} → {pdf_filename} ({len(pdf_bytes)} bytes)")
+                        
+                    except Exception as e:
+                        error_msg = f"Error convirtiendo {image_file.filename}: {str(e)}"
+                        conversion_errors.append(error_msg)
+                        logger.error(f"   ❌ {error_msg}")
+                        
+                        # Fallback: mantener la imagen original
+                        try:
+                            image_content = await image_file.read()
+                            converted_pdfs.append({
+                                'filename': image_file.filename,
+                                'content': image_content,
+                                'original_name': image_file.filename,
+                                'type': 'image_fallback',
+                                'size_bytes': len(image_content)
+                            })
+                            await image_file.seek(0)
+                            logger.info(f"   🔄 Fallback: manteniendo imagen original {image_file.filename}")
+                        except Exception as fallback_error:
+                            logger.error(f"   💥 Error incluso en fallback: {fallback_error}")
+                
+                logger.info(f"✅ Conversión completada: {len(converted_pdfs)} archivos convertidos, {len(conversion_errors)} errores")
+                
             except Exception as e:
-                logger.error(f"❌ Error leyendo archivo {file.filename}: {e}")
-
-        # PROCESAMIENTO MEJORADO CON MANEJO DE FALLOS
+                logger.error(f"❌ Error en conversión masiva de imágenes: {e}")
+                # Fallback: mantener todas las imágenes originales
+                for image_file in image_files:
+                    try:
+                        image_content = await image_file.read()
+                        converted_pdfs.append({
+                            'filename': image_file.filename,
+                            'content': image_content,
+                            'original_name': image_file.filename,
+                            'type': 'image_fallback',
+                            'size_bytes': len(image_content)
+                        })
+                        await image_file.seek(0)
+                        logger.info(f"🔄 Fallback global: manteniendo imagen original {image_file.filename}")
+                    except Exception as fallback_error:
+                        logger.error(f"💥 Error en fallback global para {image_file.filename}: {fallback_error}")
+        
+        # PREPARAR TODOS LOS ARCHIVOS PARA PROCESAMIENTO
+        all_files_to_process = []
+        
+        # Agregar PDFs originales
+        for pdf_file in pdf_files:
+            try:
+                content = await pdf_file.read()
+                all_files_to_process.append({
+                    'file_object': pdf_file,
+                    'content': content,
+                    'type': 'pdf_original',
+                    'filename': pdf_file.filename,
+                    'original_name': pdf_file.filename,
+                    'size_bytes': len(content)
+                })
+                await pdf_file.seek(0)
+                logger.info(f"📄 PDF original listo: {pdf_file.filename} ({len(content)} bytes)")
+            except Exception as e:
+                logger.error(f"❌ Error preparando PDF {pdf_file.filename}: {e}")
+        
+        # Agregar PDFs convertidos
+        for converted_pdf in converted_pdfs:
+            try:
+                # Crear UploadFile temporal para el PDF convertido
+                temp_upload_file = UploadFile(
+                    filename=converted_pdf['filename'],
+                    file=io.BytesIO(converted_pdf['content']),
+                    content_type='application/pdf'
+                )
+                all_files_to_process.append({
+                    'file_object': temp_upload_file,
+                    'content': converted_pdf['content'],
+                    'type': converted_pdf['type'],
+                    'filename': converted_pdf['filename'],
+                    'original_name': converted_pdf.get('original_name', converted_pdf['filename']),
+                    'size_bytes': converted_pdf['size_bytes']
+                })
+                logger.info(f"📄 PDF convertido listo: {converted_pdf['filename']} (de {converted_pdf['original_name']})")
+            except Exception as e:
+                logger.error(f"❌ Error preparando PDF convertido {converted_pdf['filename']}: {e}")
+        
+        logger.info(f"📦 Total archivos para procesar con Azure: {len(all_files_to_process)}")
+        
+        if not all_files_to_process:
+            logger.error("❌ No hay archivos válidos para procesar")
+            return ProcessResponse(
+                message="No hay archivos válidos para procesar",
+                success=False
+            )
+        
+        # PROCESAR TODOS LOS ARCHIVOS CON AZURE
         all_processed_data = []
         processed_count = 0
         failed_count = 0
@@ -501,33 +607,33 @@ async def upload_invoices(
         enhanced_count = 0
         fallback_count = 0
 
-        for i, file in enumerate(valid_files):
+        for i, file_data in enumerate(all_files_to_process):
+            file = file_data['file_object']
+            file_type = file_data['type']
+            original_name = file_data['original_name']
+            filename = file_data['filename']
+            
             try:
-                logger.info(f"🔄 Procesando archivo {i+1}/{len(valid_files)}: {file.filename}")
+                logger.info(f"🔄 Procesando archivo {i+1}/{len(all_files_to_process)}: {filename} (Original: {original_name})")
                 
-                # DETERMINAR TIPO DE ARCHIVO
-                file_type = "PDF" if file.content_type == 'application/pdf' else "Imagen"
-                logger.info(f"   📋 Tipo: {file_type}")
-                
-                # COMPRIMIR SI ES IMAGEN
-                if file.content_type.startswith('image/'):
+                # Comprimir si es necesario (para imágenes en fallback)
+                if file_type == 'image_fallback':
                     compressed_file = await compress_image(file)
                 else:
                     compressed_file = file
                 
-                # PROCESAR CON AZURE DOCUMENT INTELLIGENCE MEJORADO
+                # PROCESAR CON AZURE DOCUMENT INTELLIGENCE
                 processed_data = process_image(compressed_file)
                 
                 if processed_data and len(processed_data) > 0:
-                    # ANALIZAR CALIDAD DE EXTRACCIÓN
                     for data_item in processed_data:
-                        # AGREGAR INFORMACIÓN METADATA A CADA ELEMENTO
-                        data_item['archivo_origen'] = file.filename
-                        data_item['tipo_archivo'] = file_type.lower()
+                        data_item['archivo_origen'] = original_name
+                        data_item['archivo_procesado'] = filename
+                        data_item['tipo_archivo'] = file_type
+                        data_item['tipo_original'] = 'pdf' if file_type == 'pdf_original' else 'imagen'
                         data_item['indice_procesamiento'] = i + 1
                         data_item['timestamp_procesamiento'] = datetime.now().isoformat()
                         
-                        # CONTAR TIPOS DE PROCESAMIENTO
                         if data_item.get('procesamiento') == 'azure_enhanced':
                             enhanced_count += 1
                         elif data_item.get('procesamiento') == 'fallback_basico':
@@ -536,65 +642,59 @@ async def upload_invoices(
                     all_processed_data.extend(processed_data)
                     processed_count += 1
                     
-                    # DETALLES MEJORADOS DEL PROCESAMIENTO
                     confidence_levels = [item.get('confidence_level', 'unknown') for item in processed_data]
                     enhanced_items = len([c for c in confidence_levels if c == 'enhanced'])
                     
-                    processing_details.append(
-                        f"✓ {file.filename}: {len(processed_data)} factura(s) "
-                        f"[{enhanced_items} mejoradas, {len(processed_data)-enhanced_items} básicas] "
-                        f"[{file_type}]"
-                    )
+                    # Detalle del procesamiento
+                    if file_type == 'pdf_original':
+                        detail = f"✓ {original_name}: {len(processed_data)} factura(s) [{enhanced_items} mejoradas]"
+                    elif file_type == 'converted':
+                        detail = f"✓ {original_name} → {filename}: {len(processed_data)} factura(s) [{enhanced_items} mejoradas]"
+                    else:  # image_fallback
+                        detail = f"✓ {original_name} (fallback): {len(processed_data)} factura(s) [{enhanced_items} mejoradas]"
                     
-                    logger.info(f"✅ {file_type} {file.filename} procesado exitosamente - {len(processed_data)} elementos")
+                    processing_details.append(detail)
+                    logger.info(f"✅ {filename} procesado exitosamente - {len(processed_data)} elementos")
                     
-                    # DEBUG: Mostrar datos extraídos con más detalle
+                    # DEBUG: Mostrar datos extraídos
                     for j, data in enumerate(processed_data):
                         confidence = data.get('confidence_level', 'unknown')
                         logger.info(f"   📋 Factura {j+1}: {data.get('VendorName', 'No identificado')} - "
                                   f"{data.get('InvoiceId', 'Sin número')} - "
-                                  f"Total: {data.get('InvoiceTotal', 0)} - "
                                   f"Confianza: {confidence}")
                         
                 else:
                     failed_count += 1
-                    processing_details.append(f"✗ {file.filename}: no se pudieron extraer datos [{file_type}]")
-                    logger.warning(f"⚠️ No se pudieron extraer datos del archivo: {file.filename}")
+                    processing_details.append(f"✗ {original_name}: no se pudieron extraer datos")
+                    logger.warning(f"⚠️ No se pudieron extraer datos del archivo: {original_name}")
                     
             except Exception as e:
                 failed_count += 1
                 error_msg = str(e)
                 
-                # MEJORES MENSAJES DE ERROR ESPECÍFICOS
+                # Mensajes de error específicos
                 if "too large" in error_msg.lower():
                     error_msg = "archivo demasiado grande"
                 elif "timeout" in error_msg.lower():
-                    error_msg = "tiempo de espera agotado al procesar"
+                    error_msg = "tiempo de espera agotado"
                 elif "invalid" in error_msg.lower():
-                    error_msg = "formato de archivo no válido"
-                elif "get_field_value()" in error_msg:
-                    error_msg = "error interno en procesamiento de datos"
+                    error_msg = "formato no válido"
                 elif "credential" in error_msg.lower():
-                    error_msg = "error de autenticación con Azure"
+                    error_msg = "error de autenticación Azure"
                 
-                processing_details.append(f"✗ {file.filename}: error - {error_msg} [{file_type}]")
-                logger.error(f"❌ Error procesando archivo {file.filename}: {e}")
+                processing_details.append(f"✗ {original_name}: error - {error_msg}")
+                logger.error(f"❌ Error procesando {original_name}: {e}")
 
-        # VERIFICAR RESULTADOS DEL PROCESAMIENTO MEJORADO
-        logger.info(f"📊 RESULTADO DEL PROCESAMIENTO MEJORADO:")
+        # VERIFICAR RESULTADOS DEL PROCESAMIENTO
+        logger.info(f"📊 RESULTADO DEL PROCESAMIENTO:")
         logger.info(f"   • Archivos procesados exitosamente: {processed_count}")
         logger.info(f"   • Archivos fallidos: {failed_count}")
         logger.info(f"   • Total elementos extraídos: {len(all_processed_data)}")
         logger.info(f"   • Procesamientos mejorados: {enhanced_count}")
         logger.info(f"   • Procesamientos fallback: {fallback_count}")
-        logger.info(f"   • Total archivos recibidos: {len(valid_files)}")
-        
-        # ESTADÍSTICAS POR TIPO DE ARCHIVO
-        pdf_count = len([f for f in valid_files if f.content_type == 'application/pdf'])
-        image_count = len([f for f in valid_files if f.content_type and f.content_type.startswith('image/')])
-        logger.info(f"   • PDFs procesados: {pdf_count}")
-        logger.info(f"   • Imágenes procesadas: {image_count}")
-        
+        logger.info(f"   • Conversiones exitosas: {len([c for c in converted_pdfs if c['type'] == 'converted'])}")
+        logger.info(f"   • Conversiones fallback: {len([c for c in converted_pdfs if c['type'] == 'image_fallback'])}")
+
         # Verificar si se procesó al menos una factura
         if not all_processed_data:
             logger.error("❌ No se pudo procesar ninguna factura")
@@ -625,7 +725,36 @@ async def upload_invoices(
         for i, empresa in enumerate(archivos_empresas):
             logger.info(f"   📊 Empresa {i+1}: {empresa['empresa']} - {empresa['cantidad_facturas']} facturas")
         
-        # CREAR ARCHIVO ZIP CON TODOS LOS EXCEL Y PDFs ORIGINALES
+        # GUARDAR ARCHIVOS ORIGINALES Y CONVERTIDOS PARA EL ZIP
+        files_data = []
+        
+        # Agregar PDFs originales
+        for pdf_file in pdf_files:
+            try:
+                content = await pdf_file.read()
+                files_data.append({
+                    'filename': f"ORIGINAL_{pdf_file.filename}",
+                    'content': content,
+                    'type': 'pdf_original',
+                    'size_bytes': len(content)
+                })
+                await pdf_file.seek(0)
+                logger.info(f"💾 PDF original guardado: {pdf_file.filename}")
+            except Exception as e:
+                logger.error(f"❌ Error guardando PDF original {pdf_file.filename}: {e}")
+        
+        # Agregar PDFs convertidos e imágenes de fallback
+        for converted_pdf in converted_pdfs:
+            files_data.append({
+                'filename': converted_pdf['filename'],
+                'content': converted_pdf['content'],
+                'type': converted_pdf['type'],
+                'original_name': converted_pdf.get('original_name'),
+                'size_bytes': converted_pdf['size_bytes']
+            })
+            logger.info(f"💾 Archivo procesado guardado: {converted_pdf['filename']}")
+        
+        # CREAR ARCHIVO ZIP CON TODOS LOS EXCEL Y ARCHIVOS
         zip_file = crear_zip_con_excels_y_pdfs(archivos_empresas, files_data)
         
         if not zip_file:
@@ -645,15 +774,18 @@ async def upload_invoices(
         else:
             zip_filename = f"facturas_empresas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
         
-        # PREPARAR MENSAJE DE RESULTADO MEJORADO
-        if pdf_count > 0 and image_count > 0:
-            result_message = f"Procesamiento completado: {processed_count} archivos procesados ({pdf_count} PDFs, {image_count} imágenes)"
-        elif pdf_count > 0:
-            result_message = f"Procesamiento completado: {processed_count} PDFs procesados"
-        else:
-            result_message = f"Procesamiento completado: {processed_count} imágenes procesadas"
+        # PREPARAR MENSAJE DE RESULTADO
+        result_message = f"Procesamiento completado: {processed_count} archivos procesados"
         
-        # AGREGAR INFORMACIÓN DE CALIDAD
+        if len(pdf_files) > 0:
+            result_message += f", {len(pdf_files)} PDF(s) original(es)"
+        if len(image_files) > 0:
+            result_message += f", {len(image_files)} imagen(es)"
+        
+        successful_conversions = len([c for c in converted_pdfs if c['type'] == 'converted'])
+        if successful_conversions > 0:
+            result_message += f", {successful_conversions} imagen(es) convertida(s) a PDF"
+        
         if enhanced_count > 0:
             result_message += f", {enhanced_count} con datos mejorados"
         if fallback_count > 0:
@@ -661,25 +793,31 @@ async def upload_invoices(
         if failed_count > 0:
             result_message += f", {failed_count} archivos fallaron"
         
+        if conversion_errors:
+            result_message += f", {len(conversion_errors)} error(es) en conversión"
+
         # PREPARAR CONTENIDO DEL EMAIL MEJORADO
         email_subject = f"Facturas procesadas ({processed_count}) - FacturaV"
         
         email_content = f"""
         <h3>Procesamiento de facturas completado</h3>
         <p><strong>Resultado:</strong> {result_message}</p>
-        <p><strong>Total de archivos procesados:</strong> {len(valid_files)}</p>
+        <p><strong>Archivos originales:</strong> {len(pdf_files)} PDF(s), {len(image_files)} imagen(es)</p>
+        <p><strong>Archivos procesados:</strong> {len(all_files_to_process)}</p>
         <p><strong>Empresas detectadas:</strong> {total_empresas}</p>
         <p><strong>Facturas procesadas:</strong> {total_facturas}</p>
         <p><strong>Calidad de extracción:</strong> {enhanced_count} mejoradas, {fallback_count} básicas</p>
+        <p><strong>Conversiones:</strong> {successful_conversions} imagen(es) convertida(s) a PDF</p>
         """
         
-        if pdf_count > 0 or image_count > 0:
-            email_content += f"<p><strong>Tipos de archivo:</strong>"
-            if pdf_count > 0:
-                email_content += f" {pdf_count} PDF(s)"
-            if image_count > 0:
-                email_content += f" {image_count} imagen(es)"
-            email_content += "</p>"
+        if conversion_errors:
+            email_content += f"""
+            <p><strong>Errores en conversión:</strong></p>
+            <ul>
+            """
+            for error in conversion_errors:
+                email_content += f"<li>{error}</li>"
+            email_content += "</ul>"
         
         email_content += f"""
         <p><strong>Fecha de procesamiento:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
@@ -707,17 +845,20 @@ async def upload_invoices(
         <h4>Contenido del archivo ZIP:</h4>
         <ul>
             <li><strong>EXCEL_*.xlsx:</strong> Archivos Excel organizados por empresa</li>
-            <li><strong>ORIGINAL_*:</strong> Archivos originales subidos (PDFs/Imágenes)</li>
+            <li><strong>ORIGINAL_*:</strong> Archivos PDF originales subidos</li>
+            <li><strong>CONVERTED_*.pdf:</strong> Imágenes convertidas a PDF</li>
+            <li><strong>[nombre_imagen].jpg/png:</strong> Imágenes originales (solo en caso de error)</li>
         </ul>
         
         <h4>Notas importantes:</h4>
         <ul>
             <li><strong>Mejoradas:</strong> Azure extrajo datos clave automáticamente</li>
             <li><strong>Básicas:</strong> Se usaron datos mínimos (revisar manualmente)</li>
+            <li><strong>CONVERTED_*:</strong> Imágenes convertidas a PDF para mejor procesamiento</li>
             <li><strong>Archivos originales:</strong> Incluidos para referencia y verificación</li>
         </ul>
         
-        <p>Adjunto encontrará el archivo ZIP con los Excel organizados por empresa Y los archivos originales.</p>
+        <p>Adjunto encontrará el archivo ZIP con los Excel organizados por empresa Y los archivos procesados.</p>
         """
         
         # ENVIAR POR EMAIL (EN BACKGROUND)
@@ -730,7 +871,7 @@ async def upload_invoices(
             zip_filename
         )
         
-        logger.info("✅ Email programado para envío en background con Excel + archivos originales")
+        logger.info("✅ Email programado para envío en background con Excel + archivos procesados")
         
         return ProcessResponse(
             message=result_message,
@@ -738,9 +879,11 @@ async def upload_invoices(
             details=processing_details,
             processed_count=processed_count,
             failed_count=failed_count,
-            total_files=len(valid_files),
-            pdf_files=pdf_count,
-            image_files=image_count,
+            total_files=len(files),
+            pdf_files=len(pdf_files),
+            image_files=len(image_files),
+            converted_files=successful_conversions,
+            conversion_errors=len(conversion_errors),
             enhanced_extractions=enhanced_count,
             basic_extractions=fallback_count,
             total_elements=len(all_processed_data),

@@ -55,3 +55,5 @@ watchfiles==1.1.0
 websockets==15.0.1
 pillow==11.3.0
 sendgrid==6.12.5
+img2pdf==0.6.1
+pillow==11.3.0
