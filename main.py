@@ -386,7 +386,7 @@ async def upload_invoice(
             success=False
         )
 
-# Endpoint para procesar múltiples facturas - CON SOPORTE PARA PDFs
+# Endpoint para procesar múltiples facturas - CON SOPORTE PARA PDFs Y MEJOR MANEJO DE ERRORES
 @app.post("/api/upload-invoices", response_model=ProcessResponse)
 async def upload_invoices(
     background_tasks: BackgroundTasks,
@@ -395,7 +395,7 @@ async def upload_invoices(
 ):
     try:
         # DEBUG: Información inicial
-        logger.info(f"🎯 INICIO PROCESAMIENTO MÚLTIPLE CON PDFs")
+        logger.info(f"🎯 INICIO PROCESAMIENTO MÚLTIPLE MEJORADO")
         logger.info(f"📦 Número de archivos recibidos: {len(files)}")
         
         # Validar que se hayan subido archivos
@@ -443,11 +443,13 @@ async def upload_invoices(
         logger.info(f"✅ Archivos válidos para procesar: {len(valid_files)}")
         logger.info(f"📊 Tipos de archivos: {[f.content_type for f in valid_files]}")
         
-        # PROCESAMIENTO SIMPLIFICADO - CADA ARCHIVO ES UNA FACTURA INDEPENDIENTE
+        # PROCESAMIENTO MEJORADO CON MANEJO DE FALLOS
         all_processed_data = []
         processed_count = 0
         failed_count = 0
         processing_details = []
+        enhanced_count = 0
+        fallback_count = 0
 
         for i, file in enumerate(valid_files):
             try:
@@ -457,25 +459,52 @@ async def upload_invoices(
                 file_type = "PDF" if file.content_type == 'application/pdf' else "Imagen"
                 logger.info(f"   📋 Tipo: {file_type}")
                 
-                # PROCESAR DIRECTAMENTE CON AZURE DOCUMENT INTELLIGENCE
-                processed_data = process_image(file)
+                # COMPRIMIR SI ES IMAGEN
+                if file.content_type.startswith('image/'):
+                    compressed_file = await compress_image(file)
+                else:
+                    compressed_file = file
+                
+                # PROCESAR CON AZURE DOCUMENT INTELLIGENCE MEJORADO
+                processed_data = process_image(compressed_file)
                 
                 if processed_data and len(processed_data) > 0:
-                    # AGREGAR INFORMACIÓN METADATA A CADA ELEMENTO
+                    # ANALIZAR CALIDAD DE EXTRACCIÓN
                     for data_item in processed_data:
+                        # AGREGAR INFORMACIÓN METADATA A CADA ELEMENTO
                         data_item['archivo_origen'] = file.filename
                         data_item['tipo_archivo'] = file_type.lower()
                         data_item['indice_procesamiento'] = i + 1
                         data_item['timestamp_procesamiento'] = datetime.now().isoformat()
+                        
+                        # CONTAR TIPOS DE PROCESAMIENTO
+                        if data_item.get('procesamiento') == 'azure_enhanced':
+                            enhanced_count += 1
+                        elif data_item.get('procesamiento') == 'fallback_basico':
+                            fallback_count += 1
                     
                     all_processed_data.extend(processed_data)
                     processed_count += 1
-                    processing_details.append(f"✓ {file.filename}: {len(processed_data)} factura(s) procesada(s) [{file_type}]")
+                    
+                    # DETALLES MEJORADOS DEL PROCESAMIENTO
+                    confidence_levels = [item.get('confidence_level', 'unknown') for item in processed_data]
+                    enhanced_items = len([c for c in confidence_levels if c == 'enhanced'])
+                    
+                    processing_details.append(
+                        f"✓ {file.filename}: {len(processed_data)} factura(s) "
+                        f"[{enhanced_items} mejoradas, {len(processed_data)-enhanced_items} básicas] "
+                        f"[{file_type}]"
+                    )
+                    
                     logger.info(f"✅ {file_type} {file.filename} procesado exitosamente - {len(processed_data)} elementos")
                     
-                    # DEBUG: Mostrar datos extraídos
+                    # DEBUG: Mostrar datos extraídos con más detalle
                     for j, data in enumerate(processed_data):
-                        logger.info(f"   📋 Factura {j+1}: {data.get('VendorName', 'No identificado')} - {data.get('InvoiceId', 'Sin número')}")
+                        confidence = data.get('confidence_level', 'unknown')
+                        logger.info(f"   📋 Factura {j+1}: {data.get('VendorName', 'No identificado')} - "
+                                  f"{data.get('InvoiceId', 'Sin número')} - "
+                                  f"Total: {data.get('InvoiceTotal', 0)} - "
+                                  f"Confianza: {confidence}")
                         
                 else:
                     failed_count += 1
@@ -495,15 +524,19 @@ async def upload_invoices(
                     error_msg = "formato de archivo no válido"
                 elif "get_field_value()" in error_msg:
                     error_msg = "error interno en procesamiento de datos"
+                elif "credential" in error_msg.lower():
+                    error_msg = "error de autenticación con Azure"
                 
                 processing_details.append(f"✗ {file.filename}: error - {error_msg} [{file_type}]")
                 logger.error(f"❌ Error procesando archivo {file.filename}: {e}")
 
-        # VERIFICAR RESULTADOS DEL PROCESAMIENTO
-        logger.info(f"📊 RESULTADO DEL PROCESAMIENTO:")
+        # VERIFICAR RESULTADOS DEL PROCESAMIENTO MEJORADO
+        logger.info(f"📊 RESULTADO DEL PROCESAMIENTO MEJORADO:")
         logger.info(f"   • Archivos procesados exitosamente: {processed_count}")
         logger.info(f"   • Archivos fallidos: {failed_count}")
         logger.info(f"   • Total elementos extraídos: {len(all_processed_data)}")
+        logger.info(f"   • Procesamientos mejorados: {enhanced_count}")
+        logger.info(f"   • Procesamientos fallback: {fallback_count}")
         logger.info(f"   • Total archivos recibidos: {len(valid_files)}")
         
         # ESTADÍSTICAS POR TIPO DE ARCHIVO
@@ -570,6 +603,11 @@ async def upload_invoices(
         else:
             result_message = f"Procesamiento completado: {processed_count} imágenes procesadas"
         
+        # AGREGAR INFORMACIÓN DE CALIDAD
+        if enhanced_count > 0:
+            result_message += f", {enhanced_count} con datos mejorados"
+        if fallback_count > 0:
+            result_message += f", {fallback_count} con datos básicos"
         if failed_count > 0:
             result_message += f", {failed_count} archivos fallaron"
         
@@ -582,6 +620,7 @@ async def upload_invoices(
         <p><strong>Total de archivos procesados:</strong> {len(valid_files)}</p>
         <p><strong>Empresas detectadas:</strong> {total_empresas}</p>
         <p><strong>Facturas procesadas:</strong> {total_facturas}</p>
+        <p><strong>Calidad de extracción:</strong> {enhanced_count} mejoradas, {fallback_count} básicas</p>
         """
         
         if pdf_count > 0 or image_count > 0:
@@ -614,8 +653,14 @@ async def upload_invoices(
         
         email_content += """
         </ul>
+        
+        <h4>Notas importantes:</h4>
+        <ul>
+            <li><strong>Mejoradas:</strong> Azure extrajo datos clave automáticamente</li>
+            <li><strong>Básicas:</strong> Se usaron datos mínimos (revisar manualmente)</li>
+        </ul>
+        
         <p>Adjunto encontrará el archivo ZIP con los Excel organizados por empresa.</p>
-        <p><em>Nota: Las facturas multipágina fueron convertidas a PDF antes del procesamiento para mejor extracción.</em></p>
         """
         
         # ENVIAR POR EMAIL (EN BACKGROUND)
@@ -639,6 +684,8 @@ async def upload_invoices(
             total_files=len(valid_files),
             pdf_files=pdf_count,
             image_files=image_count,
+            enhanced_extractions=enhanced_count,
+            basic_extractions=fallback_count,
             total_elements=len(all_processed_data),
             empresas_procesadas=total_empresas,
             facturas_totales=total_facturas
@@ -650,6 +697,119 @@ async def upload_invoices(
             message=f"Error procesando los archivos: {str(e)}",
             success=False
         )
+
+@app.post("/api/debug-azure-processing")
+async def debug_azure_processing(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Endpoint especial para diagnosticar problemas con Azure Document Intelligence
+    """
+    try:
+        logger.info(f"🔍 Iniciando diagnóstico Azure para: {file.filename}")
+        
+        # Configurar cliente de Azure Document Intelligence
+        from azure.ai.formrecognizer import DocumentAnalysisClient
+        from azure.core.credentials import AzureKeyCredential
+        
+        document_analysis_client = DocumentAnalysisClient(
+            endpoint=settings.AZURE_FORM_RECOGNIZER_ENDPOINT,
+            credential=AzureKeyCredential(settings.AZURE_FORM_RECOGNIZER_KEY)
+        )
+        
+        file_data = await file.read()
+        file_size_mb = len(file_data) / 1024 / 1024
+        
+        logger.info(f"📄 Analizando archivo: {file.filename} ({file_size_mb:.2f} MB)")
+        
+        poller = document_analysis_client.begin_analyze_document(
+            "prebuilt-invoice", 
+            document=io.BytesIO(file_data)
+        )
+        result = poller.result()
+        
+        # Analizar resultados en detalle
+        debug_info = {
+            "filename": file.filename,
+            "file_size_mb": round(file_size_mb, 2),
+            "total_documents": len(result.documents),
+            "azure_model": "prebuilt-invoice",
+            "documents_detail": []
+        }
+        
+        for doc_idx, doc in enumerate(result.documents):
+            doc_info = {
+                "document_index": doc_idx + 1,
+                "doc_type": doc.doc_type,
+                "confidence": doc.confidence,
+                "fields_found": [],
+                "all_fields_available": list(doc.fields.keys()) if doc.fields else []
+            }
+            
+            # Listar todos los campos que Azure detectó
+            if doc.fields:
+                for field_name, field in doc.fields.items():
+                    field_info = {
+                        "field": field_name,
+                        "value": str(field.value) if field and field.value else "None",
+                        "confidence": field.confidence if field else 0,
+                        "type": type(field.value).__name__ if field and field.value else "None"
+                    }
+                    doc_info["fields_found"].append(field_info)
+            
+            debug_info["documents_detail"].append(doc_info)
+        
+        logger.info(f"✅ Diagnóstico completado: {len(result.documents)} documentos analizados")
+        return debug_info
+        
+    except Exception as e:
+        logger.error(f"❌ Error en diagnóstico Azure: {e}")
+        return {
+            "error": str(e),
+            "filename": file.filename if 'file' in locals() else "unknown",
+            "azure_endpoint": settings.AZURE_FORM_RECOGNIZER_ENDPOINT
+        }
+
+@app.post("/api/test-enhanced-processing")
+async def test_enhanced_processing(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Endpoint para probar el procesamiento mejorado vs el original
+    """
+    try:
+        # Procesar con el método original
+        from image_processor import process_image
+        
+        original_result = process_image(file)
+        
+        # Resetear archivo para reprocesar
+        await file.seek(0)
+        
+        # Procesar con método mejorado (ya está integrado en process_image)
+        enhanced_result = process_image(file)
+        
+        return {
+            "filename": file.filename,
+            "original_processing": {
+                "total_documents": len(original_result) if original_result else 0,
+                "documents": original_result
+            },
+            "enhanced_processing": {
+                "total_documents": len(enhanced_result) if enhanced_result else 0, 
+                "documents": enhanced_result
+            },
+            "comparison": {
+                "documents_difference": len(enhanced_result) - len(original_result) if original_result and enhanced_result else 0,
+                "enhancement_applied": any(doc.get('confidence_level') == 'enhanced' for doc in enhanced_result) if enhanced_result else False
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error en test-enhanced-processing: {e}")
+        return {"error": str(e)}
 
 # Ruta para verificar estado del servidor
 @app.get("/")

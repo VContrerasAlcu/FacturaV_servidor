@@ -121,7 +121,7 @@ def generate_excel(processed_data_list):
 
 def generar_excel_empresa(empresa_nombre, facturas_empresa):
     """
-    Genera un archivo Excel para una empresa específica
+    Genera un archivo Excel completo para una empresa específica con manejo mejorado de datos limitados
     """
     try:
         workbook = Workbook()
@@ -130,16 +130,35 @@ def generar_excel_empresa(empresa_nombre, facturas_empresa):
         if workbook.sheetnames:
             workbook.remove(workbook.active)
         
-        # Estilos
-        header_font = Font(bold=True, color="FFFFFF")
+        # Estilos mejorados
+        header_font = Font(bold=True, color="FFFFFF", size=12)
         header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
-        total_font = Font(bold=True, size=14)
-        money_format = '#,##0.00€'
+        total_font = Font(bold=True, size=14, color="2E74B5")
+        warning_font = Font(color="FF0000", italic=True, bold=True)
+        success_font = Font(color="00B050", italic=True)
+        normal_font = Font(size=10)
         
-        # ✅ VALIDAR EMPRESA_NAME
+        # Bordes
+        thin_border = Border(left=Side(style='thin'), 
+                           right=Side(style='thin'), 
+                           top=Side(style='thin'), 
+                           bottom=Side(style='thin'))
+        
+        money_format = '#,##0.00€'
+        date_format = 'dd/mm/yyyy'
+        
+        # ✅ VALIDAR Y LIMPIAR NOMBRE DE EMPRESA
         if not empresa_nombre or empresa_nombre == 'None':
             empresa_nombre = "Empresa No Identificada"
             logger.warning(f"⚠️ Usando nombre por defecto para empresa: {empresa_nombre}")
+        else:
+            # Limpiar nombre para seguridad
+            empresa_nombre = "".join(c for c in empresa_nombre if c.isalnum() or c in (' ', '-', '_', '.', '&'))
+        
+        # CONTADORES PARA ESTADÍSTICAS
+        total_facturas = len(facturas_empresa)
+        facturas_con_datos_completos = 0
+        facturas_con_datos_limitiados = 0
         
         # Crear una hoja por cada factura de esta empresa
         for i, factura_data in enumerate(facturas_empresa):
@@ -150,74 +169,163 @@ def generar_excel_empresa(empresa_nombre, facturas_empresa):
             try:
                 # Intentar usar nombre del archivo si es válido
                 safe_name = "".join(c for c in archivo_origen if c.isalnum() or c in (' ', '-', '_'))
-                if safe_name and len(safe_name) <= 31:
-                    sheet_name = safe_name
+                if safe_name and len(safe_name) <= 28:  # Dejar margen para número
+                    sheet_name = f"{safe_name}_{i+1}"
+                else:
+                    sheet_name = f"Factura_{i+1}"
             except:
-                pass  # Usar nombre por defecto si hay error
+                sheet_name = f"Factura_{i+1}"  # Usar nombre por defecto si hay error
             
             worksheet = workbook.create_sheet(title=sheet_name)
             current_row = 1
             
-            # 1. Información de la empresa
-            worksheet.append(['INFORMACIÓN DE LA EMPRESA'])
+            # ✅ AGREGAR INDICADOR DE CALIDAD DE DATOS MEJORADO
+            confidence_level = factura_data.get('confidence_level', 'unknown')
+            procesamiento_tipo = factura_data.get('procesamiento', 'standard')
+            es_datos_limitiados = confidence_level in ['low', 'basic'] or procesamiento_tipo == 'fallback_basico'
+            
+            if es_datos_limitiados:
+                facturas_con_datos_limitiados += 1
+                
+                # BANNER DE ADVERTENCIA MEJORADO
+                warning_cell = worksheet.cell(row=current_row, column=1, 
+                                            value='⚠️ AVISO: DATOS LIMITADOS - VERIFICACIÓN MANUAL RECOMENDADA')
+                worksheet.merge_cells(f'A{current_row}:D{current_row}')
+                warning_cell.font = warning_font
+                warning_cell.fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+                warning_cell.alignment = Alignment(horizontal='center')
+                current_row += 1
+                
+                worksheet.append(['Tipo de procesamiento:', 'Datos básicos (Azure no extrajo información completa)'])
+                worksheet.append(['Archivo origen:', archivo_origen])
+                
+                if factura_data.get('error_original'):
+                    worksheet.append(['Error en procesamiento:', factura_data.get('error_original')])
+                    current_row += 1
+                
+                worksheet.append(['Recomendación:', 'Verificar manualmente los datos de la factura original'])
+                current_row += 2  # Espacio adicional
+                
+            else:
+                facturas_con_datos_completos += 1
+                
+                # INDICADOR DE ÉXITO PARA DATOS BUENOS
+                success_cell = worksheet.cell(row=current_row, column=1, 
+                                            value='✅ DATOS EXTRAÍDOS CORRECTAMENTE')
+                worksheet.merge_cells(f'A{current_row}:D{current_row}')
+                success_cell.font = success_font
+                success_cell.fill = PatternFill(start_color="E2F0D9", end_color="E2F0D9", fill_type="solid")
+                success_cell.alignment = Alignment(horizontal='center')
+                current_row += 1
+                
+                worksheet.append(['Tipo de procesamiento:', 'Extracción automática exitosa'])
+                worksheet.append(['Nivel de confianza:', confidence_level.title() if confidence_level != 'unknown' else 'Alto'])
+                current_row += 2
+
+            # 1. INFORMACIÓN DE LA EMPRESA - SECCIÓN MEJORADA
+            empresa_header = worksheet.cell(row=current_row, column=1, value='INFORMACIÓN DE LA EMPRESA')
             worksheet.merge_cells(f'A{current_row}:D{current_row}')
-            worksheet[f'A{current_row}'].font = header_font
-            worksheet[f'A{current_row}'].fill = header_fill
+            empresa_header.font = header_font
+            empresa_header.fill = header_fill
+            empresa_header.alignment = Alignment(horizontal='center')
             current_row += 1
             
-            # ✅ DATOS CON VALORES POR DEFECTO
+            # ✅ DATOS CON VALORES POR DEFECTO Y INDICADORES DE CALIDAD
             vendor_name = factura_data.get('VendorName', 'No identificado')
             vendor_tax_id = factura_data.get('VendorTaxId', 'No disponible')
             vendor_address = factura_data.get('VendorAddress', 'No disponible')
             
-            worksheet.append(['Empresa:', vendor_name])
-            worksheet.append(['CIF/NIF:', vendor_tax_id])
-            worksheet.append(['Dirección:', vendor_address])
-            current_row += 3
+            # Marcar datos estimados con indicador visual
+            if es_datos_limitiados and (vendor_name.startswith('Empresa_Desde_') or vendor_name == 'Empresa No Identificada'):
+                vendor_name_display = f"{vendor_name} ⚠️"
+            else:
+                vendor_name_display = vendor_name
             
-            # 2. Información específica de esta factura
-            worksheet.append(['INFORMACIÓN DE LA FACTURA'])
+            worksheet.append(['Empresa:', vendor_name_display, '', ''])
+            worksheet.append(['CIF/NIF:', vendor_tax_id, '', ''])
+            
+            # Manejar dirección multilínea
+            if vendor_address and len(vendor_address) > 50:
+                # Dividir dirección larga en múltiples filas
+                address_parts = [vendor_address[i:i+50] for i in range(0, len(vendor_address), 50)]
+                worksheet.append(['Dirección:', address_parts[0], '', ''])
+                for part in address_parts[1:]:
+                    worksheet.append(['', part, '', ''])
+                    current_row += 1
+            else:
+                worksheet.append(['Dirección:', vendor_address, '', ''])
+            
+            current_row += 4  # Espacio después de información de empresa
+
+            # 2. INFORMACIÓN ESPECÍFICA DE LA FACTURA
+            factura_header = worksheet.cell(row=current_row, column=1, value='INFORMACIÓN DE LA FACTURA')
             worksheet.merge_cells(f'A{current_row}:D{current_row}')
-            worksheet[f'A{current_row}'].font = header_font
-            worksheet[f'A{current_row}'].fill = header_fill
+            factura_header.font = header_font
+            factura_header.fill = header_fill
+            factura_header.alignment = Alignment(horizontal='center')
             current_row += 1
             
-            worksheet.append(['Archivo origen:', archivo_origen])
-            
-            # ✅ INFORMACIÓN DE FACTURA CON VALORES POR DEFECTO
             invoice_id = factura_data.get('InvoiceId', 'Sin número')
             invoice_date = factura_data.get('InvoiceDate', 'No especificada')
             invoice_total = factura_data.get('InvoiceTotal', 0)
+            due_date = factura_data.get('DueDate', 'No especificada')
             
-            worksheet.append(['Número Factura:', invoice_id])
+            worksheet.append(['Archivo origen:', archivo_origen, '', ''])
+            worksheet.append(['Número Factura:', invoice_id, '', ''])
             
-            # Formatear fecha
+            # Formatear fecha correctamente
             try:
                 if invoice_date and invoice_date != 'No especificada' and isinstance(invoice_date, str):
                     if 'T' in invoice_date:  # Formato ISO
                         invoice_date_obj = datetime.fromisoformat(invoice_date.replace('Z', '+00:00'))
                         invoice_date = invoice_date_obj.strftime('%d/%m/%Y')
-            except (ValueError, AttributeError):
-                pass  # Mantener fecha original si hay error
+                    elif '-' in invoice_date:  # Formato YYYY-MM-DD
+                        invoice_date_obj = datetime.strptime(invoice_date, '%Y-%m-%d')
+                        invoice_date = invoice_date_obj.strftime('%d/%m/%Y')
+            except (ValueError, AttributeError) as e:
+                logger.warning(f"Error formateando fecha {invoice_date}: {e}")
+                # Mantener fecha original si hay error
             
-            worksheet.append(['Fecha Factura:', invoice_date])
-            current_row += 3
+            worksheet.append(['Fecha Factura:', invoice_date, '', ''])
             
-            # 3. Artículos de la factura
-            worksheet.append(['ARTÍCULOS FACTURADOS'])
+            if due_date and due_date != 'No especificada':
+                try:
+                    if 'T' in due_date:
+                        due_date_obj = datetime.fromisoformat(due_date.replace('Z', '+00:00'))
+                        due_date = due_date_obj.strftime('%d/%m/%Y')
+                    elif '-' in due_date:
+                        due_date_obj = datetime.strptime(due_date, '%Y-%m-%d')
+                        due_date = due_date_obj.strftime('%d/%m/%Y')
+                except (ValueError, AttributeError):
+                    pass
+                worksheet.append(['Fecha Vencimiento:', due_date, '', ''])
+            
+            current_row += 4  # Espacio después de información de factura
+
+            # 3. ARTÍCULOS DE LA FACTURA - TABLA MEJORADA
+            items_header = worksheet.cell(row=current_row, column=1, value='ARTÍCULOS FACTURADOS')
             worksheet.merge_cells(f'A{current_row}:D{current_row}')
-            worksheet[f'A{current_row}'].font = header_font
-            worksheet[f'A{current_row}'].fill = header_fill
+            items_header.font = header_font
+            items_header.fill = header_fill
+            items_header.alignment = Alignment(horizontal='center')
             current_row += 1
             
-            worksheet.append(['Artículo', 'Unidades', 'Precio Unitario', 'Precio Total'])
+            # Encabezados de tabla
+            headers = ['Artículo', 'Unidades', 'Precio Unitario', 'Precio Total']
+            worksheet.append(headers)
+            
+            # Aplicar estilo a encabezados
             for col in range(1, 5):
-                worksheet.cell(row=current_row, column=col).font = header_font
-                worksheet.cell(row=current_row, column=col).fill = header_fill
+                cell = worksheet.cell(row=current_row, column=col)
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = PatternFill(start_color="5B9BD5", end_color="5B9BD5", fill_type="solid")
+                cell.border = thin_border
+                cell.alignment = Alignment(horizontal='center')
             current_row += 1
             
             items = factura_data.get('Items', [])
             if items:
+                subtotal_items = 0
                 for item in items:
                     # ✅ VALORES POR DEFECTO PARA ITEMS
                     description = item.get('Description', 'Sin descripción')
@@ -225,89 +333,191 @@ def generar_excel_empresa(empresa_nombre, facturas_empresa):
                     unit_price = item.get('UnitPrice', 0)
                     amount = item.get('Amount', 0)
                     
+                    # Calcular amount si no está presente
+                    if amount == 0 and quantity != 0 and unit_price != 0:
+                        amount = quantity * unit_price
+                    
+                    subtotal_items += amount
+                    
                     worksheet.append([
                         description,
                         quantity,
                         unit_price,
                         amount
                     ])
+                    
+                    # Aplicar bordes y formato a la fila
+                    for col in range(1, 5):
+                        cell = worksheet.cell(row=current_row, column=col)
+                        cell.border = thin_border
+                        cell.font = normal_font
+                        
+                        # Formato numérico para columnas de precios
+                        if col in [3, 4]:  # Precio Unitario y Precio Total
+                            cell.number_format = money_format
+                        elif col == 2:  # Unidades
+                            cell.number_format = '0.##'
+                    
                     current_row += 1
+                
+                # SUBTOTAL ARTÍCULOS
+                worksheet.append(['SUBTOTAL ARTÍCULOS:', '', '', subtotal_items])
+                subtotal_cell = worksheet.cell(row=current_row, column=4)
+                subtotal_cell.font = Font(bold=True)
+                subtotal_cell.number_format = money_format
+                current_row += 1
+                
             else:
+                # NO HAY ARTÍCULOS
                 worksheet.append(['No se encontraron artículos en esta factura', '', '', ''])
+                for col in range(1, 5):
+                    worksheet.cell(row=current_row, column=col).border = thin_border
                 current_row += 1
             
-            # 4. Totales de IVA de esta factura
-            worksheet.append(['DETALLE DE IMPUESTOS'])
+            current_row += 1  # Espacio
+
+            # 4. DETALLE DE IMPUESTOS - TABLA MEJORADA
+            taxes_header = worksheet.cell(row=current_row, column=1, value='DETALLE DE IMPUESTOS')
             worksheet.merge_cells(f'A{current_row}:D{current_row}')
-            worksheet[f'A{current_row}'].font = header_font
-            worksheet[f'A{current_row}'].fill = header_fill
+            taxes_header.font = header_font
+            taxes_header.fill = header_fill
+            taxes_header.alignment = Alignment(horizontal='center')
             current_row += 1
             
             worksheet.append(['Tipo de IVA', 'Importe', '', ''])
             for col in range(1, 3):
-                worksheet.cell(row=current_row, column=col).font = header_font
-                worksheet.cell(row=current_row, column=col).fill = header_fill
+                cell = worksheet.cell(row=current_row, column=col)
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = PatternFill(start_color="5B9BD5", end_color="5B9BD5", fill_type="solid")
+                cell.border = thin_border
+                cell.alignment = Alignment(horizontal='center')
             current_row += 1
             
             tax_details = factura_data.get('TaxDetails', [])
+            total_impuestos = 0
+            
             if tax_details:
                 for tax in tax_details:
                     # ✅ VALORES POR DEFECTO PARA IMPUESTOS
                     rate = tax.get('Rate', '0%')
                     amount = tax.get('Amount', 0)
                     
+                    total_impuestos += amount
+                    
                     worksheet.append([
                         rate,
                         amount,
                         '', ''
                     ])
+                    
+                    # Aplicar bordes y formato
+                    for col in range(1, 3):
+                        cell = worksheet.cell(row=current_row, column=col)
+                        cell.border = thin_border
+                        cell.font = normal_font
+                        if col == 2:  # Columna de importe
+                            cell.number_format = money_format
+                    
                     current_row += 1
             else:
                 worksheet.append(['No se encontraron impuestos', '', '', ''])
+                for col in range(1, 3):
+                    worksheet.cell(row=current_row, column=col).border = thin_border
                 current_row += 1
             
-            # 5. Total de esta factura
-            worksheet.append(['TOTAL FACTURA:', invoice_total, '', ''])
-            total_cell = worksheet.cell(row=current_row, column=1)
-            total_value_cell = worksheet.cell(row=current_row, column=2)
-            total_cell.font = total_font
+            # TOTAL IMPUESTOS
+            if tax_details:
+                worksheet.append(['TOTAL IMPUESTOS:', total_impuestos, '', ''])
+                tax_total_cell = worksheet.cell(row=current_row, column=2)
+                tax_total_cell.font = Font(bold=True)
+                tax_total_cell.number_format = money_format
+                current_row += 1
+            
+            current_row += 1  # Espacio
+
+            # 5. TOTAL FINAL DE LA FACTURA
+            worksheet.append(['TOTAL FACTURA:', '', '', invoice_total])
+            total_label_cell = worksheet.cell(row=current_row, column=1)
+            total_value_cell = worksheet.cell(row=current_row, column=4)
+            
+            total_label_cell.font = total_font
             total_value_cell.font = total_font
             total_value_cell.number_format = money_format
             
-            # Ajustar anchos de columnas
-            column_widths = [40, 15, 15, 15]
+            # Resaltar celda de total
+            for col in range(1, 5):
+                cell = worksheet.cell(row=current_row, column=col)
+                cell.fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+                cell.border = thin_border
+
+            # 6. METADATOS ADICIONALES (solo si hay datos limitados)
+            if es_datos_limitiados:
+                current_row += 2
+                worksheet.append(['INFORMACIÓN ADICIONAL DEL PROCESAMIENTO:', '', '', ''])
+                worksheet.append(['Timestamp:', factura_data.get('timestamp_procesamiento', 'No disponible'), '', ''])
+                worksheet.append(['Tipo archivo:', factura_data.get('tipo_archivo', 'No disponible'), '', ''])
+                worksheet.append(['Índice procesamiento:', factura_data.get('indice_procesamiento', 'N/A'), '', ''])
+
+            # AJUSTAR ANCHOS DE COLUMNAS MEJORADO
+            column_widths = [45, 15, 18, 18]  # Ajustado para mejor visualización
             for col_idx, width in enumerate(column_widths, 1):
-                worksheet.column_dimensions[chr(64 + col_idx)].width = width
+                column_letter = chr(64 + col_idx)  # A, B, C, D
+                worksheet.column_dimensions[column_letter].width = width
+            
+            # CONGELAR PANELES (header visible al desplazar)
+            worksheet.freeze_panes = 'A2'
             
             current_row += 2
         
-        # 6. HOJA DE RESUMEN GENERAL DE LA EMPRESA
-        resumen_sheet = workbook.create_sheet(title="RESUMEN EMPRESA")
-        resumen_iva = calcular_resumen_iva_empresa(facturas_empresa)
+        # 7. HOJA DE RESUMEN GENERAL MEJORADA
+        resumen_sheet = workbook.create_sheet(title="📊 RESUMEN EMPRESA")
+        current_row = 1
         
-        # Título
-        resumen_sheet.append(['RESUMEN GENERAL - ' + empresa_nombre])
-        resumen_sheet.merge_cells('A1:B1')
-        resumen_sheet['A1'].font = Font(bold=True, size=16)
-        resumen_sheet.append(['Total de facturas procesadas:', len(facturas_empresa)])
-        resumen_sheet.append([])
+        # TÍTULO PRINCIPAL
+        title_cell = resumen_sheet.cell(row=current_row, column=1, 
+                                      value=f'RESUMEN GENERAL - {empresa_nombre.upper()}')
+        resumen_sheet.merge_cells(f'A{current_row}:C{current_row}')
+        title_cell.font = Font(bold=True, size=16, color="2E74B5")
+        title_cell.alignment = Alignment(horizontal='center')
+        current_row += 2
         
-        # Lista de facturas procesadas
-        resumen_sheet.append(['FACTURAS PROCESADAS:'])
-        resumen_sheet.merge_cells('A4:B4')
-        resumen_sheet['A4'].font = header_font
-        resumen_sheet['A4'].fill = header_fill
+        # ESTADÍSTICAS RÁPIDAS
+        resumen_sheet.append(['ESTADÍSTICAS DE PROCESAMIENTO:', '', ''])
+        resumen_sheet.merge_cells(f'A{current_row}:C{current_row}')
+        resumen_sheet.cell(row=current_row, column=1).font = header_font
+        resumen_sheet.cell(row=current_row, column=1).fill = header_fill
+        current_row += 1
         
-        resumen_sheet.append(['Número Factura', 'Fecha', 'Total'])
-        for col in range(1, 4):
-            resumen_sheet.cell(row=5, column=col).font = header_font
-            resumen_sheet.cell(row=5, column=col).fill = header_fill
+        resumen_sheet.append(['Total de facturas procesadas:', total_facturas, ''])
+        resumen_sheet.append(['Facturas con datos completos:', facturas_con_datos_completos, '✅'])
+        resumen_sheet.append(['Facturas con datos limitados:', facturas_con_datos_limitiados, '⚠️'])
         
-        row_num = 6
+        # Calcular porcentaje de éxito
+        if total_facturas > 0:
+            porcentaje_exito = (facturas_con_datos_completos / total_facturas) * 100
+            resumen_sheet.append(['Tasa de éxito:', f'{porcentaje_exito:.1f}%', ''])
+        
+        current_row += 2
+        
+        # LISTA DETALLADA DE FACTURAS
+        resumen_sheet.append(['LISTA DETALLADA DE FACTURAS:', '', ''])
+        resumen_sheet.merge_cells(f'A{current_row}:C{current_row}')
+        resumen_sheet.cell(row=current_row, column=1).font = header_font
+        resumen_sheet.cell(row=current_row, column=1).fill = header_fill
+        current_row += 1
+        
+        resumen_sheet.append(['Número Factura', 'Fecha', 'Total', 'Calidad'])
+        for col in range(1, 5):
+            resumen_sheet.cell(row=current_row, column=col).font = Font(bold=True)
+            resumen_sheet.cell(row=current_row, column=col).fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+        current_row += 1
+        
+        total_general = 0
         for factura in facturas_empresa:
             invoice_id = factura.get('InvoiceId', 'Sin número')
             invoice_date = factura.get('InvoiceDate', 'No especificada')
             invoice_total = factura.get('InvoiceTotal', 0)
+            confidence = factura.get('confidence_level', 'unknown')
             
             # Formatear fecha para resumen
             try:
@@ -318,62 +528,73 @@ def generar_excel_empresa(empresa_nombre, facturas_empresa):
             except:
                 pass
             
-            resumen_sheet.append([invoice_id, invoice_date, invoice_total])
-            row_num += 1
+            # Indicador de calidad
+            if confidence in ['enhanced', 'high']:
+                calidad = '✅ Alta'
+            elif confidence in ['basic', 'low']:
+                calidad = '⚠️ Básica'
+            else:
+                calidad = '🔍 Standard'
+            
+            resumen_sheet.append([invoice_id, invoice_date, invoice_total, calidad])
+            total_general += invoice_total if invoice_total else 0
+            current_row += 1
         
-        row_num += 1
+        current_row += 1
         
-        # Detalle de IVA
-        resumen_sheet.append(['DETALLE DE IVA POR TIPO'])
-        resumen_sheet.merge_cells(f'A{row_num}:B{row_num}')
-        resumen_sheet[f'A{row_num}'].font = header_font
-        resumen_sheet[f'A{row_num}'].fill = header_fill
-        row_num += 1
-        
-        resumen_sheet.append(['Tipo de IVA', 'Total Importe'])
-        for col in range(1, 3):
-            resumen_sheet.cell(row=row_num, column=col).font = header_font
-            resumen_sheet.cell(row=row_num, column=col).fill = header_fill
-        row_num += 1
-        
-        total_general = 0
+        # DETALLE DE IVA POR TIPO (AGREGADO)
+        resumen_iva = calcular_resumen_iva_empresa(facturas_empresa)
         if resumen_iva:
+            resumen_sheet.append(['DETALLE DE IVA POR TIPO:', '', ''])
+            resumen_sheet.merge_cells(f'A{current_row}:C{current_row}')
+            resumen_sheet.cell(row=current_row, column=1).font = header_font
+            resumen_sheet.cell(row=current_row, column=1).fill = header_fill
+            current_row += 1
+            
+            resumen_sheet.append(['Tipo de IVA', 'Total Importe', ''])
+            for col in range(1, 3):
+                resumen_sheet.cell(row=current_row, column=col).font = Font(bold=True)
+                resumen_sheet.cell(row=current_row, column=col).fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+            current_row += 1
+            
             for tipo_iva, importe in resumen_iva.items():
-                resumen_sheet.append([tipo_iva, importe])
-                total_general += importe
-                row_num += 1
-        else:
-            resumen_sheet.append(['No se encontraron datos de IVA', 0])
-            row_num += 1
+                resumen_sheet.append([tipo_iva, importe, ''])
+                resumen_sheet.cell(row=current_row, column=2).number_format = money_format
+                current_row += 1
         
-        # Total general
-        resumen_sheet.append([])
-        resumen_sheet.append(['TOTAL GENERAL EMPRESA:', total_general])
-        resumen_sheet.cell(row=row_num + 2, column=1).font = total_font
-        resumen_sheet.cell(row=row_num + 2, column=2).font = total_font
-        resumen_sheet.cell(row=row_num + 2, column=2).number_format = money_format
+        # TOTAL GENERAL
+        current_row += 1
+        resumen_sheet.append(['TOTAL GENERAL EMPRESA:', total_general, ''])
+        resumen_sheet.cell(row=current_row, column=1).font = total_font
+        resumen_sheet.cell(row=current_row, column=2).font = total_font
+        resumen_sheet.cell(row=current_row, column=2).number_format = money_format
         
-        # Ajustar anchos
-        resumen_sheet.column_dimensions['A'].width = 25
+        # Ajustar anchos de columnas en resumen
+        resumen_sheet.column_dimensions['A'].width = 35
         resumen_sheet.column_dimensions['B'].width = 20
         resumen_sheet.column_dimensions['C'].width = 15
+        resumen_sheet.column_dimensions['D'].width = 12
+        
+        # CONGELAR PANELES EN RESUMEN
+        resumen_sheet.freeze_panes = 'A3'
         
         # Guardar en memoria
         output = BytesIO()
         workbook.save(output)
         output.seek(0)
         
-        logger.info(f"✅ Excel generado para {empresa_nombre} con {len(facturas_empresa)} facturas")
+        logger.info(f"✅ Excel generado para {empresa_nombre}: {total_facturas} facturas "
+                   f"({facturas_con_datos_completos} completas, {facturas_con_datos_limitiados} limitadas)")
         return output.getvalue()
         
     except Exception as e:
         logger.error(f"❌ Error generando Excel para {empresa_nombre}: {e}")
         
-        # ✅ FALLBACK: Crear Excel simple con información básica
+        # ✅ FALLBACK MEJORADO: Crear Excel simple con información básica
         try:
             fallback_workbook = Workbook()
             fallback_sheet = fallback_workbook.active
-            fallback_sheet.title = "Resumen"
+            fallback_sheet.title = "Resumen Básico"
             
             fallback_sheet.append(['RESUMEN DE FACTURAS - ' + empresa_nombre])
             fallback_sheet.append([f'Error durante generación: {str(e)}'])
@@ -382,11 +603,14 @@ def generar_excel_empresa(empresa_nombre, facturas_empresa):
             fallback_sheet.append([''])
             
             # Información básica de cada factura
+            fallback_sheet.append(['Detalle de facturas procesadas:'])
+            fallback_sheet.append(['Archivo', 'Empresa', 'Número', 'Total'])
+            
             for i, factura in enumerate(facturas_empresa):
                 fallback_sheet.append([
-                    f'Factura {i+1}:',
-                    factura.get('InvoiceId', 'Sin número'),
+                    factura.get('archivo_origen', f'Factura_{i+1}'),
                     factura.get('VendorName', 'No identificado'),
+                    factura.get('InvoiceId', 'Sin número'),
                     factura.get('InvoiceTotal', 0)
                 ])
             

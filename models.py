@@ -38,7 +38,6 @@ class PasswordResetRequest(BaseModel):
     code: str
     new_password: str = Field(..., min_length=6)
 
-# En models.py, actualizar ProcessResponse:
 class ProcessResponse(BaseModel):
     message: str
     success: bool
@@ -46,12 +45,10 @@ class ProcessResponse(BaseModel):
     processed_count: Optional[int] = None
     failed_count: Optional[int] = None
     total_files: Optional[int] = None
-    pdf_files: Optional[int] = None  # ✅ NUEVO
-    image_files: Optional[int] = None  # ✅ NUEVO
-    processed_count: Optional[int] = None
-    failed_count: Optional[int] = None
-    total_files: Optional[int] = None
-    unique_files_processed: Optional[int] = None
+    pdf_files: Optional[int] = None
+    image_files: Optional[int] = None
+    enhanced_extractions: Optional[int] = None  # ✅ NUEVO
+    basic_extractions: Optional[int] = None     # ✅ NUEVO
     total_elements: Optional[int] = None
     empresas_procesadas: Optional[int] = None
     facturas_totales: Optional[int] = None
