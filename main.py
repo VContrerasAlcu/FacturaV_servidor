@@ -514,12 +514,14 @@ async def upload_invoices(
                 pages.sort(key=lambda x: x['page_number'])
                 logger.info(f"🔄 Convirtiendo grupo {group_id} con {len(pages)} páginas a PDF único")
                 
-                # Preparar archivos para conversión
+                # Preparar archivos para conversión - CORREGIDO
                 files_for_conversion = []
                 for page in pages:
-                    # Crear UploadFile temporal para cada página
-                    temp_file = UploadFile(filename=page['filename'])
-                    temp_file.file = io.BytesIO(page['content'])
+                    # Crear UploadFile temporal para cada página - CORREGIDO
+                    temp_file = UploadFile(
+                        filename=page['filename'],
+                        file=io.BytesIO(page['content'])  # ✅ CORRECCIÓN AQUÍ
+                    )
                     files_for_conversion.append(temp_file)
                 
                 # Convertir el grupo completo a un solo PDF
@@ -604,13 +606,16 @@ async def upload_invoices(
             
             await file.seek(0)
         
-        # COMBINAR TODOS LOS ARCHIVOS PARA PROCESAMIENTO
+        # COMBINAR TODOS LOS ARCHIVOS PARA PROCESAMIENTO - CORREGIDO
         all_files_to_process = []
         
         # Agregar PDFs multipágina convertidos
         for multipage_pdf in converted_multipage_pdfs:
-            temp_upload_file = UploadFile(filename=multipage_pdf['filename'])
-            temp_upload_file.file = io.BytesIO(multipage_pdf['content'])
+            # CORREGIDO: Pasar file en el constructor
+            temp_upload_file = UploadFile(
+                filename=multipage_pdf['filename'],
+                file=io.BytesIO(multipage_pdf['content'])  # ✅ CORRECCIÓN AQUÍ
+            )
             all_files_to_process.append({
                 'file_object': temp_upload_file,
                 'content': multipage_pdf['content'],
@@ -624,8 +629,10 @@ async def upload_invoices(
         
         # Agregar PDFs simples convertidos
         for single_pdf in converted_single_pdfs:
-            temp_upload_file = UploadFile(filename=single_pdf['filename'])
-            temp_upload_file.file = io.BytesIO(single_pdf['content'])
+            temp_upload_file = UploadFile(
+                filename=single_pdf['filename'],
+                file=io.BytesIO(single_pdf['content'])  # ✅ CORRECCIÓN AQUÍ
+            )
             all_files_to_process.append({
                 'file_object': temp_upload_file,
                 'content': single_pdf['content'],
@@ -637,8 +644,10 @@ async def upload_invoices(
         
         # Agregar PDFs originales
         for pdf_file in pdf_files:
-            temp_upload_file = UploadFile(filename=pdf_file['filename'])
-            temp_upload_file.file = io.BytesIO(pdf_file['content'])
+            temp_upload_file = UploadFile(
+                filename=pdf_file['filename'],
+                file=io.BytesIO(pdf_file['content'])  # ✅ CORRECCIÓN AQUÍ
+            )
             all_files_to_process.append({
                 'file_object': temp_upload_file,
                 'content': pdf_file['content'],
@@ -659,6 +668,8 @@ async def upload_invoices(
                 message="No hay archivos válidos para procesar",
                 success=False
             )
+        
+        # ... (el resto del código permanece igual hasta el final del endpoint)
         
         # PROCESAR TODOS LOS ARCHIVOS CON AZURE
         all_processed_data = []
@@ -896,7 +907,7 @@ async def upload_invoices(
             message=f"Error procesando los archivos: {str(e)}",
             success=False
         )
-        
+    
 # AGREGAR LA FUNCIÓN AUXILIAR PARA CREAR EL ZIP
 def crear_zip_con_excels_y_pdfs(archivos_empresas, files_data):
     """
