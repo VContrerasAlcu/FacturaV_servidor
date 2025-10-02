@@ -386,8 +386,7 @@ async def upload_invoice(
             success=False
         )
 
-# Endpoint para procesar múltiples facturas - CON SOPORTE MULTIPÁGINA
-# En main.py - Endpoint /api/upload-invoices COMPLETO y MODIFICADO
+# Endpoint para procesar múltiples facturas - CON SOPORTE PARA PDFs
 @app.post("/api/upload-invoices", response_model=ProcessResponse)
 async def upload_invoices(
     background_tasks: BackgroundTasks,
@@ -416,14 +415,14 @@ async def upload_invoices(
                 success=False
             )
         
-        # ✅ VALIDAR TIPOS DE ARCHIVO ACTUALIZADOS (PDF + imágenes)
+        # Validar tipos de archivo actualizados (PDF + imágenes)
         invalid_files = []
         valid_files = []
         
         for i, file in enumerate(files):
             logger.info(f"📄 Archivo {i+1}: {file.filename} - Tipo: {file.content_type}")
             
-            # ✅ ACEPTAR PDFs Y IMÁGENES
+            # ACEPTAR PDFs Y IMÁGENES
             if (file.content_type and 
                 (file.content_type.startswith('image/') or 
                  file.content_type == 'application/pdf')):
@@ -444,7 +443,7 @@ async def upload_invoices(
         logger.info(f"✅ Archivos válidos para procesar: {len(valid_files)}")
         logger.info(f"📊 Tipos de archivos: {[f.content_type for f in valid_files]}")
         
-        # ✅ PROCESAMIENTO SIMPLIFICADO - CADA ARCHIVO ES UNA FACTURA INDEPENDIENTE
+        # PROCESAMIENTO SIMPLIFICADO - CADA ARCHIVO ES UNA FACTURA INDEPENDIENTE
         all_processed_data = []
         processed_count = 0
         failed_count = 0
@@ -454,16 +453,15 @@ async def upload_invoices(
             try:
                 logger.info(f"🔄 Procesando archivo {i+1}/{len(valid_files)}: {file.filename}")
                 
-                # ✅ DETERMINAR TIPO DE ARCHIVO
+                # DETERMINAR TIPO DE ARCHIVO
                 file_type = "PDF" if file.content_type == 'application/pdf' else "Imagen"
                 logger.info(f"   📋 Tipo: {file_type}")
                 
-                # ✅ PROCESAR DIRECTAMENTE CON AZURE DOCUMENT INTELLIGENCE
-                # Azure DI soporta tanto imágenes como PDFs
+                # PROCESAR DIRECTAMENTE CON AZURE DOCUMENT INTELLIGENCE
                 processed_data = process_image(file)
                 
                 if processed_data and len(processed_data) > 0:
-                    # ✅ AGREGAR INFORMACIÓN METADATA A CADA ELEMENTO
+                    # AGREGAR INFORMACIÓN METADATA A CADA ELEMENTO
                     for data_item in processed_data:
                         data_item['archivo_origen'] = file.filename
                         data_item['tipo_archivo'] = file_type.lower()
@@ -474,6 +472,11 @@ async def upload_invoices(
                     processed_count += 1
                     processing_details.append(f"✓ {file.filename}: {len(processed_data)} factura(s) procesada(s) [{file_type}]")
                     logger.info(f"✅ {file_type} {file.filename} procesado exitosamente - {len(processed_data)} elementos")
+                    
+                    # DEBUG: Mostrar datos extraídos
+                    for j, data in enumerate(processed_data):
+                        logger.info(f"   📋 Factura {j+1}: {data.get('VendorName', 'No identificado')} - {data.get('InvoiceId', 'Sin número')}")
+                        
                 else:
                     failed_count += 1
                     processing_details.append(f"✗ {file.filename}: no se pudieron extraer datos [{file_type}]")
@@ -483,25 +486,27 @@ async def upload_invoices(
                 failed_count += 1
                 error_msg = str(e)
                 
-                # ✅ MEJORES MENSAJES DE ERROR ESPECÍFICOS
+                # MEJORES MENSAJES DE ERROR ESPECÍFICOS
                 if "too large" in error_msg.lower():
                     error_msg = "archivo demasiado grande"
                 elif "timeout" in error_msg.lower():
                     error_msg = "tiempo de espera agotado al procesar"
                 elif "invalid" in error_msg.lower():
                     error_msg = "formato de archivo no válido"
+                elif "get_field_value()" in error_msg:
+                    error_msg = "error interno en procesamiento de datos"
                 
                 processing_details.append(f"✗ {file.filename}: error - {error_msg} [{file_type}]")
                 logger.error(f"❌ Error procesando archivo {file.filename}: {e}")
 
-        # ✅ VERIFICAR RESULTADOS DEL PROCESAMIENTO
+        # VERIFICAR RESULTADOS DEL PROCESAMIENTO
         logger.info(f"📊 RESULTADO DEL PROCESAMIENTO:")
         logger.info(f"   • Archivos procesados exitosamente: {processed_count}")
         logger.info(f"   • Archivos fallidos: {failed_count}")
         logger.info(f"   • Total elementos extraídos: {len(all_processed_data)}")
         logger.info(f"   • Total archivos recibidos: {len(valid_files)}")
         
-        # ✅ ESTADÍSTICAS POR TIPO DE ARCHIVO
+        # ESTADÍSTICAS POR TIPO DE ARCHIVO
         pdf_count = len([f for f in valid_files if f.content_type == 'application/pdf'])
         image_count = len([f for f in valid_files if f.content_type and f.content_type.startswith('image/')])
         logger.info(f"   • PDFs procesados: {pdf_count}")
@@ -516,7 +521,7 @@ async def upload_invoices(
                 details=processing_details
             )
         
-        # ✅ GENERAR ARCHIVOS EXCEL POR EMPRESA
+        # GENERAR ARCHIVOS EXCEL POR EMPRESA
         logger.info(f"📊 Generando Excel para {len(all_processed_data)} elementos procesados...")
         archivos_empresas = generate_excel(all_processed_data)
         
@@ -528,7 +533,7 @@ async def upload_invoices(
                 details=processing_details
             )
         
-        # ✅ VERIFICAR LOS EXCEL GENERADOS
+        # VERIFICAR LOS EXCEL GENERADOS
         total_empresas = len(archivos_empresas)
         total_facturas = sum(empresa['cantidad_facturas'] for empresa in archivos_empresas)
         
@@ -537,7 +542,7 @@ async def upload_invoices(
         for i, empresa in enumerate(archivos_empresas):
             logger.info(f"   📊 Empresa {i+1}: {empresa['empresa']} - {empresa['cantidad_facturas']} facturas")
         
-        # ✅ CREAR ARCHIVO ZIP CON TODOS LOS EXCEL
+        # CREAR ARCHIVO ZIP CON TODOS LOS EXCEL
         zip_file = crear_zip_con_excels(archivos_empresas)
         
         if not zip_file:
@@ -557,7 +562,7 @@ async def upload_invoices(
         else:
             zip_filename = f"facturas_empresas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
         
-        # ✅ PREPARAR MENSAJE DE RESULTADO MEJORADO
+        # PREPARAR MENSAJE DE RESULTADO MEJORADO
         if pdf_count > 0 and image_count > 0:
             result_message = f"Procesamiento completado: {processed_count} archivos procesados ({pdf_count} PDFs, {image_count} imágenes)"
         elif pdf_count > 0:
@@ -568,7 +573,7 @@ async def upload_invoices(
         if failed_count > 0:
             result_message += f", {failed_count} archivos fallaron"
         
-        # ✅ PREPARAR CONTENIDO DEL EMAIL MEJORADO
+        # PREPARAR CONTENIDO DEL EMAIL MEJORADO
         email_subject = f"Facturas procesadas ({processed_count}) - FacturaV"
         
         email_content = f"""
@@ -613,7 +618,7 @@ async def upload_invoices(
         <p><em>Nota: Las facturas multipágina fueron convertidas a PDF antes del procesamiento para mejor extracción.</em></p>
         """
         
-        # ✅ ENVIAR POR EMAIL (EN BACKGROUND)
+        # ENVIAR POR EMAIL (EN BACKGROUND)
         background_tasks.add_task(
             send_email_with_file,
             current_user['email'], 
