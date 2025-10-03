@@ -9,7 +9,7 @@ from PIL import Image
 import logging
 import zipfile
 from pdf_converter import convert_images_to_pdf, convert_single_image_to_pdf
-
+import os
 from config import settings
 from database import init_db, get_user_by_email, save_user, verify_password, hash_password
 from auth import (
