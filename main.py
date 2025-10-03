@@ -1333,6 +1333,189 @@ async def test_with_verified_email():
         
     except Exception as e:
         return {"error": str(e)}
+    
+@app.post("/api/test-pdf-processing")
+async def test_pdf_processing(
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Procesa el archivo 'prueba.pdf' exactamente igual que las facturas del móvil
+    Genera Excel y lo envía por email
+    """
+    try:
+        logger.info("🎯 INICIANDO PROCESAMIENTO DE PRUEBA.PDF")
+        
+        # Ruta al archivo de prueba (debes subir prueba.pdf a tu servidor)
+        pdf_path = "prueba.pdf"
+        
+        # Verificar que el archivo existe
+        if not os.path.exists(pdf_path):
+            logger.error(f"❌ Archivo de prueba no encontrado: {pdf_path}")
+            return {
+                "success": False,
+                "message": f"Archivo de prueba no encontrado: {pdf_path}"
+            }
+        
+        # Leer el archivo PDF como si fuera un UploadFile
+        with open(pdf_path, "rb") as f:
+            pdf_content = f.read()
+        
+        # Crear un UploadFile temporal con el PDF
+        pdf_file = UploadFile(
+            filename="prueba.pdf",
+            file=io.BytesIO(pdf_content)
+        )
+        
+        logger.info(f"📄 PDF de prueba cargado: {len(pdf_content)} bytes")
+        
+        # PROCESAR CON AZURE (igual que en el procesamiento normal)
+        processed_data = process_image(pdf_file)
+        
+        if not processed_data:
+            logger.error("❌ No se pudieron extraer datos del PDF de prueba")
+            return {
+                "success": False,
+                "message": "No se pudieron extraer datos del PDF de prueba"
+            }
+        
+        logger.info(f"✅ PDF procesado: {len(processed_data)} documentos extraídos")
+        
+        # Agregar información de origen a los datos (igual que en procesamiento normal)
+        for data_item in processed_data:
+            data_item['archivo_origen'] = "prueba.pdf"
+            data_item['timestamp_procesamiento'] = datetime.now().isoformat()
+        
+        # GENERAR EXCEL (igual que en procesamiento normal)
+        archivos_empresas = generate_excel(processed_data)
+        
+        if not archivos_empresas:
+            logger.error("❌ Error generando Excel desde PDF de prueba")
+            return {
+                "success": False, 
+                "message": "Error generando Excel desde PDF de prueba"
+            }
+        
+        # PREPARAR ARCHIVOS PARA EL ZIP (igual que en procesamiento normal)
+        files_data = [{
+            'filename': 'prueba.pdf',
+            'content': pdf_content,
+            'type': 'pdf_original',
+            'original_name': 'prueba.pdf'
+        }]
+        
+        # CREAR ARCHIVO ZIP
+        zip_file = crear_zip_con_excels_y_pdfs(archivos_empresas, files_data)
+        
+        if not zip_file:
+            logger.warning("⚠️ Error creando ZIP, enviando solo Excel")
+            if archivos_empresas:
+                excel_data = archivos_empresas[0]['archivo']
+                zip_file = io.BytesIO(excel_data)
+                zip_filename = f"prueba_factura.xlsx"
+            else:
+                return {
+                    "success": False,
+                    "message": "Error generando archivos de resultados"
+                }
+        else:
+            zip_filename = f"prueba_factura_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+        
+        # PREPARAR CONTENIDO DEL EMAIL
+        email_subject = "✅ Prueba PDF Procesado - FacturaV"
+        
+        email_content = f"""
+        <h3>Prueba de Procesamiento PDF Completada</h3>
+        <p>Se ha procesado exitosamente el archivo <strong>prueba.pdf</strong> mediante el endpoint de prueba.</p>
+        
+        <h4>Resultados del procesamiento:</h4>
+        <ul>
+            <li><strong>Archivo procesado:</strong> prueba.pdf</li>
+            <li><strong>Documentos extraídos:</strong> {len(processed_data)}</li>
+            <li><strong>Empresas detectadas:</strong> {len(archivos_empresas)}</li>
+            <li><strong>Fecha de procesamiento:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</li>
+        </ul>
+        
+        <h4>Empresas procesadas:</h4>
+        <ul>
+        """
+        
+        for empresa in archivos_empresas:
+            email_content += f"<li><strong>{empresa['empresa']}</strong>: {empresa['cantidad_facturas']} factura(s)</li>"
+        
+        email_content += f"""
+        </ul>
+        
+        <h4>Detalles de los documentos extraídos:</h4>
+        <ul>
+        """
+        
+        for i, doc in enumerate(processed_data):
+            vendor = doc.get('VendorName', 'No identificado')
+            invoice_id = doc.get('InvoiceId', 'Sin número')
+            total = doc.get('InvoiceTotal', 0)
+            email_content += f"<li>Documento {i+1}: {vendor} - {invoice_id} - {total}€</li>"
+        
+        email_content += """
+        </ul>
+        
+        <p><strong>Contenido del archivo adjunto:</strong></p>
+        <ul>
+            <li>Archivos Excel organizados por empresa</li>
+            <li>Copia del PDF original procesado</li>
+        </ul>
+        
+        <p>Este es un email de prueba generado automáticamente.</p>
+        """
+        
+        # ENVIAR POR EMAIL (usando el email específico que mencionaste)
+        test_email = "vcontrerasalcu@gmail.com"
+        
+        background_tasks.add_task(
+            send_email_with_file,
+            test_email, 
+            email_subject, 
+            email_content,
+            zip_file, 
+            zip_filename
+        )
+        
+        logger.info(f"✅ Email de prueba programado para: {test_email}")
+        
+        # INFORMACIÓN DE DEBUG PARA LA RESPUESTA
+        debug_info = {
+            "success": True,
+            "message": f"PDF de prueba procesado exitosamente. Email enviado a {test_email}",
+            "processing_details": {
+                "pdf_file": "prueba.pdf",
+                "documents_extracted": len(processed_data),
+                "companies_detected": len(archivos_empresas),
+                "email_recipient": test_email,
+                "companies": [
+                    {
+                        'name': emp['empresa'],
+                        'invoice_count': emp['cantidad_facturas']
+                    } for emp in archivos_empresas
+                ],
+                "extracted_data_preview": [
+                    {
+                        'VendorName': doc.get('VendorName'),
+                        'InvoiceId': doc.get('InvoiceId'),
+                        'InvoiceTotal': doc.get('InvoiceTotal'),
+                        'confidence_level': doc.get('confidence_level', 'unknown')
+                    } for doc in processed_data
+                ]
+            }
+        }
+        
+        return debug_info
+        
+    except Exception as e:
+        logger.error(f"💥 Error procesando PDF de prueba: {e}")
+        return {
+            "success": False,
+            "message": f"Error procesando PDF de prueba: {str(e)}"
+        }
 
 if __name__ == "__main__":
     import uvicorn
