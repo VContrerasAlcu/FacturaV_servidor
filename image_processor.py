@@ -166,17 +166,50 @@ def validate_extracted_data(invoice_data):
     
     return is_valid
 
+# En image_processor.py - mejora la función process_image
+
+def extract_field_robust(invoice, field_names, default_value=None):
+    """
+    Busca un campo en múltiples nombres posibles y ubicaciones
+    """
+    for field_name in field_names:
+        if field_name in invoice.fields:
+            field = invoice.fields[field_name]
+            if field and field.value:
+                return get_field_value(field)
+    
+    # Búsqueda en campos de dirección
+    if 'VendorAddress' in invoice.fields:
+        address_field = invoice.fields['VendorAddress']
+        if address_field and address_field.value:
+            address_value = address_field.value
+            # Extraer CIF/NIF de la dirección si está disponible
+            if hasattr(address_value, 'street_address') and address_value.street_address:
+                address_text = address_value.street_address.lower()
+                # Buscar patrones de CIF/NIF en el texto de dirección
+                import re
+                cif_patterns = [
+                    r'[A-Z][0-9]{8}',  # CIF español
+                    r'[0-9]{8}[A-Z]',  # NIF español
+                    r'[A-Z][0-9]{7}[A-Z]',  # CIF antiguo
+                ]
+                for pattern in cif_patterns:
+                    matches = re.findall(pattern, address_text.upper())
+                    if matches:
+                        return matches[0]
+    
+    return default_value
+
 def process_image(file):
     try:
-        logger.info(f"🔍 Iniciando procesamiento de: {file.filename}")
+        logger.info(f"🔍 Iniciando procesamiento MEJORADO de: {file.filename}")
         
-        # Configurar cliente de Azure Document Intelligence
+        # Configurar cliente de Azure
         document_analysis_client = DocumentAnalysisClient(
             endpoint=settings.AZURE_FORM_RECOGNIZER_ENDPOINT,
             credential=AzureKeyCredential(settings.AZURE_FORM_RECOGNIZER_KEY)
         )
         
-        # Leer archivo (PDF o imagen)
         file_data = file.file.read()
         logger.info(f"📄 Archivo leído: {len(file_data)} bytes")
         
@@ -189,99 +222,125 @@ def process_image(file):
         
         logger.info(f"📊 Azure devolvió {len(invoices.documents)} documentos")
         
-        # Procesar resultados con mejor manejo de errores
         processed_data = []
         for idx, invoice in enumerate(invoices.documents):
-            logger.info(f"📋 Procesando documento {idx + 1}...")
+            logger.info(f"📋 Procesando documento {idx + 1} con extracción mejorada...")
             
-            # MEJORAR EXTRACCIÓN CON ENHANCE
-            enhanced_data = enhance_azure_extraction(invoice)
+            # EXTRACCIÓN MEJORADA DE CAMPOS CLAVE
+            vendor_name = extract_field_robust(
+                invoice, 
+                ['VendorName', 'VendorOrganization', 'Vendor'],
+                'Empresa No Identificada'
+            )
             
-            # Extraer valores usando get_field_value (método original)
-            vendor_name = get_field_value(invoice.fields.get('VendorName'))
-            vendor_tax_id = get_field_value(invoice.fields.get('VendorTaxId'))
-            vendor_address = get_field_value(invoice.fields.get('VendorAddress'))
-            invoice_id = get_field_value(invoice.fields.get('InvoiceId'))
-            invoice_date = get_field_value(invoice.fields.get('InvoiceDate'))
-            invoice_total = get_field_value(invoice.fields.get('InvoiceTotal'))
-            due_date = get_field_value(invoice.fields.get('DueDate'))
+            vendor_tax_id = extract_field_robust(
+                invoice,
+                ['VendorTaxId', 'VendorId', 'VendorNumber', 'TaxId'],
+                'No disponible'
+            )
             
-            # USAR DATOS MEJORADOS SI LOS TENEMOS
-            if enhanced_data:
-                vendor_name = enhanced_data['VendorName']
-                invoice_id = enhanced_data['InvoiceId']
-                invoice_total = enhanced_data['InvoiceTotal']
+            # MEJORAR EXTRACCIÓN DE TOTALES
+            invoice_total = extract_field_robust(
+                invoice,
+                ['InvoiceTotal', 'AmountDue', 'Total', 'GrandTotal', 'TotalAmount'],
+                0
+            )
             
-            # Aplicar valores por defecto después de get_field_value
+            # Si no encuentra el total, calcularlo
+            if not invoice_total or invoice_total == 0:
+                subtotal = get_field_value(invoice.fields.get('SubTotal'), 0)
+                total_tax = get_field_value(invoice.fields.get('TotalTax'), 0)
+                invoice_total = subtotal + total_tax
+                logger.info(f"🔄 Total calculado: {subtotal} + {total_tax} = {invoice_total}")
+            
+            # EXTRACCIÓN MEJORADA DE IVA
+            tax_details = []
+            tax_fields = invoice.fields.get('TaxDetails')
+            if tax_fields and tax_fields.value:
+                for tax in tax_fields.value:
+                    rate = get_tax_rate_value(tax.value.get('Rate'))
+                    amount = get_field_value(tax.value.get('Amount'), 0)
+                    tax_details.append({
+                        'Rate': rate if rate else '21%',  # Valor por defecto común
+                        'Amount': amount
+                    })
+            
+            # Si no hay impuestos detectados, intentar inferirlos
+            if not tax_details and invoice_total > 0:
+                subtotal = get_field_value(invoice.fields.get('SubTotal'), 0)
+                if subtotal > 0:
+                    tax_amount = invoice_total - subtotal
+                    if tax_amount > 0:
+                        tax_rate = (tax_amount / subtotal) * 100
+                        tax_details.append({
+                            'Rate': f"{tax_rate:.1f}%",
+                            'Amount': tax_amount
+                        })
+                        logger.info(f"🔄 IVA inferido: {tax_amount} ({tax_rate:.1f}%)")
+            
             invoice_data = {
-                # Información del vendedor con valores por defecto
-                'VendorName': vendor_name if vendor_name and vendor_name != 'No identificado' else 'Empresa No Identificada',
-                'VendorTaxId': vendor_tax_id if vendor_tax_id and vendor_tax_id != 'No disponible' else 'No disponible',
-                'VendorAddress': vendor_address if vendor_address and vendor_address != 'No disponible' else 'No disponible',
+                # Información del vendedor
+                'VendorName': vendor_name,
+                'VendorTaxId': vendor_tax_id,
+                'VendorAddress': extract_field_robust(
+                    invoice, 
+                    ['VendorAddress', 'VendorStreet', 'VendorLocation'],
+                    'No disponible'
+                ),
                 
                 # Información de la factura
-                'InvoiceId': invoice_id if invoice_id and invoice_id != 'Sin número' else f"FACT_{datetime.now().strftime('%H%M%S')}_{idx}",
-                'InvoiceDate': invoice_date,
-                'InvoiceTotal': invoice_total if invoice_total else 0,
-                'DueDate': due_date,
+                'InvoiceId': extract_field_robust(
+                    invoice,
+                    ['InvoiceId', 'InvoiceNumber', 'DocumentNumber'],
+                    f"FACT_{datetime.now().strftime('%H%M%S')}_{idx}"
+                ),
+                'InvoiceDate': get_field_value(invoice.fields.get('InvoiceDate')),
+                'InvoiceTotal': invoice_total,
+                'DueDate': get_field_value(invoice.fields.get('DueDate')),
                 
-                # Artículos
+                # Campos calculados/mejorados
+                'SubTotal': get_field_value(invoice.fields.get('SubTotal'), 0),
+                'TotalTax': get_field_value(invoice.fields.get('TotalTax'), 0),
+                'AmountDue': get_field_value(invoice.fields.get('AmountDue'), 0),
+                
+                # Artículos e impuestos
                 'Items': [],
-                'TaxDetails': [],
+                'TaxDetails': tax_details,
                 
-                # Metadata de procesamiento
-                'procesamiento': 'azure_enhanced',
-                'confidence_level': enhanced_data.get('confidence_level', 'basic') if enhanced_data else 'basic'
+                # Metadata mejorada
+                'procesamiento': 'azure_enhanced_plus',
+                'confidence_level': 'enhanced',
+                'campos_detectados': list(invoice.fields.keys()) if invoice.fields else []
             }
             
-            # LOG para debug
-            logger.info(f"📄 Factura procesada - Empresa: {invoice_data['VendorName']}, Número: {invoice_data['InvoiceId']}, Total: {invoice_data['InvoiceTotal']}")
-            
-            # Procesar items
+            # Procesar items (mantener lógica existente pero mejorada)
             items = invoice.fields.get('Items')
             if items and items.value:
-                logger.info(f"🛒 Procesando {len(items.value)} items...")
                 for item in items.value:
-                    # Extraer valores de items
-                    description = get_field_value(item.value.get('Description'))
-                    quantity = get_field_value(item.value.get('Quantity'))
-                    unit_price = get_field_value(item.value.get('UnitPrice'))
-                    amount = get_field_value(item.value.get('Amount'))
+                    description = get_field_value(item.value.get('Description'), 'Sin descripción')
+                    quantity = get_field_value(item.value.get('Quantity'), 0)
+                    unit_price = get_field_value(item.value.get('UnitPrice'), 0)
+                    amount = get_field_value(item.value.get('Amount'), 0)
                     
-                    item_data = {
-                        'Description': description if description else 'Sin descripción',
-                        'Quantity': quantity if quantity else 0,
-                        'UnitPrice': unit_price if unit_price else 0,
-                        'Amount': amount if amount else 0
-                    }
-                    invoice_data['Items'].append(item_data)
-            else:
-                logger.info("📭 No se encontraron items en la factura")
-            
-            # Procesar impuestos
-            tax_details = invoice.fields.get('TaxDetails')
-            if tax_details and tax_details.value:
-                logger.info(f"💰 Procesando {len(tax_details.value)} impuestos...")
-                for tax in tax_details.value:
-                    # Extraer valores de impuestos
-                    rate = get_tax_rate_value(tax.value.get('Rate'))
-                    amount = get_field_value(tax.value.get('Amount'))
+                    # Calcular amount si no está presente
+                    if amount == 0 and quantity != 0 and unit_price != 0:
+                        amount = quantity * unit_price
                     
-                    tax_data = {
-                        'Rate': rate if rate else '0%',
-                        'Amount': amount if amount else 0
-                    }
-                    invoice_data['TaxDetails'].append(tax_data)
-            else:
-                logger.info("📭 No se encontraron impuestos en la factura")
+                    invoice_data['Items'].append({
+                        'Description': description,
+                        'Quantity': quantity,
+                        'UnitPrice': unit_price,
+                        'Amount': amount
+                    })
             
-            # VALIDAR DATOS EXTRAÍDOS
-            is_valid = validate_extracted_data(invoice_data)
-            if is_valid:
+            # VALIDACIÓN MEJORADA
+            required_fields_valid = validate_extracted_data(invoice_data)
+            
+            if required_fields_valid:
                 processed_data.append(invoice_data)
-                logger.info(f"✅ Documento {idx + 1} procesado y validado")
+                logger.info(f"✅ Documento {idx + 1} procesado: {vendor_name} - {invoice_data['InvoiceId']} - {invoice_total}€")
             else:
-                logger.warning(f"⚠️ Documento {idx + 1} tiene datos insuficientes, pero se incluirá igual")
+                logger.warning(f"⚠️ Documento {idx + 1} tiene datos limitados, pero se incluirá")
                 processed_data.append(invoice_data)
         
         logger.info(f"✅ Archivo {file.filename} procesado: {len(processed_data)} facturas extraídas")
@@ -289,8 +348,7 @@ def process_image(file):
         
     except Exception as e:
         logger.error(f"❌ Error procesando archivo {file.filename}: {e}")
-        # CREAR DATOS BÁSICOS COMO FALLBACK
-        logger.info("🔄 Creando datos básicos como fallback...")
+        # Fallback mejorado
         basic_data = {
             'VendorName': f"Empresa_Desde_{file.filename}",
             'InvoiceId': f"FALLBACK_{datetime.now().strftime('%H%M%S')}",
@@ -303,6 +361,7 @@ def process_image(file):
             'TaxDetails': [],
             'procesamiento': 'fallback_basico',
             'confidence_level': 'low',
-            'error_original': str(e)
+            'error_original': str(e),
+            'campos_detectados': []
         }
         return [basic_data]

@@ -1,99 +1,89 @@
 # src/services/pdf_converter.py
 import img2pdf
-from PIL import Image
+from PIL import Image, ImageOps
 import io
 import logging
 from fastapi import UploadFile
 
 logger = logging.getLogger(__name__)
 
-async def convert_images_to_pdf(images: list) -> bytes:
+async def compress_image_for_pdf(image_file: UploadFile, max_size=(1200, 1600), quality=75):
     """
-    Convierte una lista de imágenes (UploadFile) a un PDF multipágina
-    """
-    try:
-        logger.info(f"🔄 Convirtiendo {len(images)} imágenes a PDF...")
-        
-        # Lista para almacenar los datos de imagen en bytes
-        image_bytes_list = []
-        
-        for i, image_file in enumerate(images):
-            try:
-                # Leer el contenido de la imagen
-                image_content = await image_file.read()
-                
-                # Verificar que es una imagen válida
-                image = Image.open(io.BytesIO(image_content))
-                
-                # Convertir a RGB si es necesario y guardar en formato JPEG
-                if image.mode != 'RGB':
-                    image = image.convert('RGB')
-                
-                # Guardar la imagen en formato JPEG en memoria
-                jpeg_buffer = io.BytesIO()
-                image.save(jpeg_buffer, format='JPEG', quality=85)
-                jpeg_buffer.seek(0)
-                
-                image_bytes_list.append(jpeg_buffer.read())
-                logger.info(f"✅ Imagen {i+1} preparada para conversión: {image_file.filename}")
-                
-                # Resetear el archivo para futuras lecturas
-                await image_file.seek(0)
-                
-            except Exception as e:
-                logger.error(f"❌ Error procesando imagen {image_file.filename}: {e}")
-                continue
-        
-        if not image_bytes_list:
-            raise Exception("No hay imágenes válidas para convertir a PDF")
-        
-        # Convertir imágenes a PDF con configuración específica
-        pdf_bytes = img2pdf.convert(
-            image_bytes_list,
-            rotation=img2pdf.Rotation.ifvalid
-        )
-        logger.info(f"✅ PDF generado: {len(pdf_bytes)} bytes, {len(image_bytes_list)} páginas")
-        
-        return pdf_bytes
-        
-    except Exception as e:
-        logger.error(f"❌ Error convirtiendo imágenes a PDF: {e}")
-        raise
-
-async def convert_single_image_to_pdf(image_file: UploadFile) -> bytes:
-    """
-    Convierte una sola imagen a PDF
+    Comprime y optimiza una imagen para PDF
     """
     try:
-        logger.info(f"🔄 Convirtiendo imagen única a PDF: {image_file.filename}")
-        
-        # Leer el contenido de la imagen
+        # Leer imagen original
         image_content = await image_file.read()
-        
-        # Procesar la imagen con PIL
         image = Image.open(io.BytesIO(image_content))
         
         # Convertir a RGB si es necesario
         if image.mode != 'RGB':
             image = image.convert('RGB')
         
-        # Guardar en buffer JPEG
-        jpeg_buffer = io.BytesIO()
-        image.save(jpeg_buffer, format='JPEG', quality=85)
-        jpeg_buffer.seek(0)
+        # Redimensionar manteniendo aspecto (si es muy grande)
+        if image.size[0] > max_size[0] or image.size[1] > max_size[1]:
+            image.thumbnail(max_size, Image.Resampling.LANCZOS)
+        
+        # Optimizar y comprimir
+        optimized_buffer = io.BytesIO()
+        image.save(
+            optimized_buffer, 
+            format='JPEG', 
+            quality=quality,
+            optimize=True,
+            progressive=True
+        )
+        
+        await image_file.seek(0)
+        return optimized_buffer.getvalue()
+        
+    except Exception as e:
+        logger.error(f"Error comprimiendo imagen: {e}")
+        await image_file.seek(0)
+        return await image_file.read()
+
+async def convert_images_to_pdf(images: list) -> bytes:
+    """
+    Convierte una lista de imágenes a PDF optimizado
+    """
+    try:
+        logger.info(f"🔄 Convirtiendo {len(images)} imágenes a PDF optimizado...")
+        
+        optimized_images = []
+        total_original_size = 0
+        total_optimized_size = 0
+        
+        for i, image_file in enumerate(images):
+            try:
+                # Comprimir cada imagen
+                original_content = await image_file.read()
+                total_original_size += len(original_content)
+                
+                optimized_content = await compress_image_for_pdf(image_file)
+                total_optimized_size += len(optimized_content)
+                
+                optimized_images.append(optimized_content)
+                logger.info(f"✅ Imagen {i+1} optimizada: {len(original_content)/1024:.1f}KB → {len(optimized_content)/1024:.1f}KB")
+                
+            except Exception as e:
+                logger.error(f"❌ Error procesando imagen {image_file.filename}: {e}")
+                continue
+        
+        if not optimized_images:
+            raise Exception("No hay imágenes válidas para convertir a PDF")
         
         # Convertir a PDF
         pdf_bytes = img2pdf.convert(
-            jpeg_buffer.getvalue(),
+            optimized_images,
             rotation=img2pdf.Rotation.ifvalid
         )
         
-        # Resetear el archivo
-        await image_file.seek(0)
+        compression_ratio = (total_original_size - total_optimized_size) / total_original_size * 100
+        logger.info(f"✅ PDF generado: {len(pdf_bytes)/1024:.1f}KB, {len(optimized_images)} páginas")
+        logger.info(f"📊 Compresión: {compression_ratio:.1f}% de reducción")
         
-        logger.info(f"✅ PDF único generado: {len(pdf_bytes)} bytes")
         return pdf_bytes
         
     except Exception as e:
-        logger.error(f"❌ Error convirtiendo imagen única a PDF: {e}")
+        logger.error(f"❌ Error convirtiendo imágenes a PDF: {e}")
         raise
