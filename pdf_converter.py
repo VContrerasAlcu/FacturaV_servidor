@@ -1,4 +1,4 @@
-# src/services/pdf_converter.py
+# pdf_converter.py - VERSIÓN COMPLETA CORREGIDA
 import img2pdf
 from PIL import Image, ImageOps
 import io
@@ -86,4 +86,19 @@ async def convert_images_to_pdf(images: list) -> bytes:
         
     except Exception as e:
         logger.error(f"❌ Error convirtiendo imágenes a PDF: {e}")
+        raise
+
+async def convert_single_image_to_pdf(image_file):
+    """
+    Convierte una sola imagen a PDF - FUNCIÓN NUEVA
+    """
+    try:
+        logger.info(f"🔄 Convirtiendo imagen única a PDF: {image_file.filename}")
+        
+        # Usar la función existente para una sola imagen
+        pdf_bytes = await convert_images_to_pdf([image_file])
+        return pdf_bytes
+        
+    except Exception as e:
+        logger.error(f"❌ Error convirtiendo imagen única a PDF: {e}")
         raise
