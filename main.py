@@ -35,7 +35,7 @@ from excel_generator import generate_excel, generate_single_excel
 from contextlib import asynccontextmanager
 from pdf_optimizer import PDFOptimizer
 from custom_processor import CustomModelProcessor
-from simplified_excel_generator import generate_simplified_excel
+from excel_generator_simple import generate_simplified_excel
 
 pdf_optimizer = PDFOptimizer()
 custom_processor = CustomModelProcessor()
