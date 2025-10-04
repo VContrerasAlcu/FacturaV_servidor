@@ -33,7 +33,9 @@ from email_sender import send_verification_code, send_email, send_email_with_fil
 from image_processor import process_image
 from excel_generator import generate_excel, generate_single_excel
 from contextlib import asynccontextmanager
+from pdf_optimizer import PDFOptimizer
 
+pdf_optimizer = PDFOptimizer()
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -525,7 +527,7 @@ async def upload_invoices(
                     files_for_conversion.append(temp_file)
                 
                 # Convertir el grupo completo a un solo PDF
-                pdf_bytes = await convert_images_to_pdf(files_for_conversion)
+                pdf_bytes = await pdf_optimizer.create_optimized_pdf(files_for_conversion)
                 
                 original_name = pages[0]['original_name']
                 pdf_filename = f"MULTIPAGE_{original_name}.pdf"
