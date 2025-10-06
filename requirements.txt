@@ -1,4 +1,5 @@
-﻿aiofiles==23.2.1
+﻿# requirements.txt - VERSIÓN COMPATIBLE CON PYTHON 3.13
+aiofiles==23.2.1
 annotated-types==0.7.0
 anyio==3.7.1
 azure-ai-formrecognizer==3.3.1
@@ -53,7 +54,7 @@ urllib3==2.5.0
 uvicorn==0.24.0
 watchfiles==1.1.0
 websockets==15.0.1
-# Pillow actualizado para compatibilidad con Python 3.13
-pillow==10.3.0
+# Pillow compatible con Python 3.13
+pillow==11.0.0
 sendgrid==6.12.5
 img2pdf==0.6.1
