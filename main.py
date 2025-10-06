@@ -10,6 +10,7 @@ import logging
 import zipfile
 from pdf_converter import convert_images_to_pdf, convert_single_image_to_pdf
 import os
+import json
 from config import settings
 from database import init_db, get_user_by_email, save_user, verify_password, hash_password
 from auth import (
@@ -115,6 +116,7 @@ async def compress_image(file: UploadFile, max_size_mb: int = 4, quality: int = 
         # En caso de error, devolver el archivo original
         file.file.seek(0)
         return file
+
 def crear_zip_con_excels_y_pdfs(archivos_empresas, files_data):
     """
     Crea un archivo ZIP con todos los Excel de las empresas Y los PDFs originales
@@ -426,9 +428,7 @@ async def upload_invoice(
             success=False
         )
 
-# Endpoint para procesar múltiples facturas - CON SOPORTE PARA PDFs Y ENVÍO DE ARCHIVOS ORIGINALES
-# Endpoint para procesar múltiples facturas - CON CONVERSIÓN DE IMÁGENES A PDF
-# Endpoint para procesar múltiples facturas - CON AGRUPACIÓN MULTIPÁGINA
+# Endpoint para procesar múltiples facturas - CONVERSIÓN MEJORADA DE IMÁGENES
 @app.post("/api/upload-invoices", response_model=ProcessResponse)
 async def upload_invoices(
     background_tasks: BackgroundTasks,
@@ -519,13 +519,13 @@ async def upload_invoices(
                 pages.sort(key=lambda x: x['page_number'])
                 logger.info(f"🔄 Convirtiendo grupo {group_id} con {len(pages)} páginas a PDF único")
                 
-                # Preparar archivos para conversión - CORREGIDO
+                # Preparar archivos para conversión
                 files_for_conversion = []
                 for page in pages:
-                    # Crear UploadFile temporal para cada página - CORREGIDO
+                    # Crear UploadFile temporal para cada página
                     temp_file = UploadFile(
                         filename=page['filename'],
-                        file=io.BytesIO(page['content'])  # ✅ CORRECCIÓN AQUÍ
+                        file=io.BytesIO(page['content'])
                     )
                     files_for_conversion.append(temp_file)
                 
@@ -556,70 +556,89 @@ async def upload_invoices(
                     single_files.append(page['file_object'])
                     logger.info(f"🔄 Fallback: página {page['page_number']} del grupo {group_id} enviada individualmente")
         
-        # CONVERTIR ARCHIVOS SIMPLES (IMÁGENES) A PDFs
+        # CONVERTIR ARCHIVOS SIMPLES (IMÁGENES) A PDFs - VERSIÓN MEJORADA
         converted_single_pdfs = []
         pdf_files = []
         
         for file in single_files:
-            content = await file.read()
-            file_type = file.content_type
-            
-            if file_type == 'application/pdf':
-                # Ya es PDF, usar directamente
-                pdf_files.append({
-                    'filename': f"SINGLE_{file.filename}",
-                    'content': content,
-                    'original_name': file.filename,
-                    'type': 'pdf_original',
-                    'size_bytes': len(content)
-                })
-                logger.info(f"📄 PDF original: {file.filename}")
-            elif file_type and file_type.startswith('image/'):
-                # Convertir imagen a PDF
-                try:
-                    # Resetear el archivo para la conversión
-                    file.file = io.BytesIO(content)
-                    pdf_bytes = await convert_single_image_to_pdf(file)
-                    converted_single_pdfs.append({
-                        'filename': f"CONVERTED_{file.filename.split('.')[0]}.pdf",
-                        'content': pdf_bytes,
+            try:
+                content = await file.read()
+                file_type = file.content_type
+                
+                logger.info(f"🔄 Procesando archivo simple: {file.filename} ({file_type})")
+                
+                if file_type == 'application/pdf':
+                    # Ya es PDF, usar directamente
+                    pdf_files.append({
+                        'filename': f"SINGLE_{file.filename}",
+                        'content': content,
                         'original_name': file.filename,
-                        'type': 'converted_single',
-                        'size_bytes': len(pdf_bytes)
+                        'type': 'pdf_original',
+                        'size_bytes': len(content)
                     })
-                    logger.info(f"✅ Imagen convertida: {file.filename} → PDF")
-                except Exception as e:
-                    logger.error(f"❌ Error convirtiendo imagen {file.filename}: {e}")
-                    # Fallback: mantener como imagen
+                    logger.info(f"📄 PDF original: {file.filename}")
+                elif file_type and file_type.startswith('image/'):
+                    # Convertir imagen a PDF - CON MANEJO MEJORADO DE ERRORES
+                    try:
+                        # Resetear el archivo para la conversión
+                        file.file = io.BytesIO(content)
+                        pdf_bytes = await convert_single_image_to_pdf(file)
+                        
+                        if pdf_bytes:
+                            converted_single_pdfs.append({
+                                'filename': f"CONVERTED_{file.filename.split('.')[0]}.pdf",
+                                'content': pdf_bytes,
+                                'original_name': file.filename,
+                                'type': 'converted_single',
+                                'size_bytes': len(pdf_bytes)
+                            })
+                            logger.info(f"✅ Imagen convertida: {file.filename} → PDF ({len(pdf_bytes)} bytes)")
+                        else:
+                            logger.warning(f"⚠️ Conversión falló para {file.filename}, usando original")
+                            pdf_files.append({
+                                'filename': file.filename,
+                                'content': content,
+                                'original_name': file.filename,
+                                'type': 'image_fallback',
+                                'size_bytes': len(content)
+                            })
+                            
+                    except Exception as conv_error:
+                        logger.error(f"❌ Error convirtiendo imagen {file.filename}: {conv_error}")
+                        # Fallback: mantener como archivo binario
+                        pdf_files.append({
+                            'filename': file.filename,
+                            'content': content,
+                            'original_name': file.filename,
+                            'type': 'image_fallback',
+                            'size_bytes': len(content)
+                        })
+                else:
+                    logger.warning(f"⚠️ Tipo de archivo no soportado: {file.filename} ({file_type})")
+                    # Tratar como binario genérico
                     pdf_files.append({
                         'filename': file.filename,
                         'content': content,
                         'original_name': file.filename,
-                        'type': 'image_fallback',
+                        'type': 'unknown',
                         'size_bytes': len(content)
                     })
-            else:
-                logger.warning(f"⚠️ Tipo de archivo no soportado: {file.filename} ({file_type})")
-                # Tratar como binario genérico
-                pdf_files.append({
-                    'filename': file.filename,
-                    'content': content,
-                    'original_name': file.filename,
-                    'type': 'unknown',
-                    'size_bytes': len(content)
-                })
-            
-            await file.seek(0)
+                
+                await file.seek(0)
+                
+            except Exception as e:
+                logger.error(f"❌ Error procesando archivo simple {file.filename}: {e}")
+                await file.seek(0)
+                continue
         
-        # COMBINAR TODOS LOS ARCHIVOS PARA PROCESAMIENTO - CORREGIDO
+        # COMBINAR TODOS LOS ARCHIVOS PARA PROCESAMIENTO
         all_files_to_process = []
         
         # Agregar PDFs multipágina convertidos
         for multipage_pdf in converted_multipage_pdfs:
-            # CORREGIDO: Pasar file en el constructor
             temp_upload_file = UploadFile(
                 filename=multipage_pdf['filename'],
-                file=io.BytesIO(multipage_pdf['content'])  # ✅ CORRECCIÓN AQUÍ
+                file=io.BytesIO(multipage_pdf['content'])
             )
             all_files_to_process.append({
                 'file_object': temp_upload_file,
@@ -636,7 +655,7 @@ async def upload_invoices(
         for single_pdf in converted_single_pdfs:
             temp_upload_file = UploadFile(
                 filename=single_pdf['filename'],
-                file=io.BytesIO(single_pdf['content'])  # ✅ CORRECCIÓN AQUÍ
+                file=io.BytesIO(single_pdf['content'])
             )
             all_files_to_process.append({
                 'file_object': temp_upload_file,
@@ -651,7 +670,7 @@ async def upload_invoices(
         for pdf_file in pdf_files:
             temp_upload_file = UploadFile(
                 filename=pdf_file['filename'],
-                file=io.BytesIO(pdf_file['content'])  # ✅ CORRECCIÓN AQUÍ
+                file=io.BytesIO(pdf_file['content'])
             )
             all_files_to_process.append({
                 'file_object': temp_upload_file,
@@ -673,8 +692,6 @@ async def upload_invoices(
                 message="No hay archivos válidos para procesar",
                 success=False
             )
-        
-        # ... (el resto del código permanece igual hasta el final del endpoint)
         
         # PROCESAR TODOS LOS ARCHIVOS CON AZURE
         all_processed_data = []
@@ -755,7 +772,7 @@ async def upload_invoices(
 
         # GENERAR ARCHIVOS EXCEL POR EMPRESA
         logger.info(f"📊 Generando Excel para {len(all_processed_data)} elementos procesados...")
-        archivos_empresas = generate_simplified_excel(processed_data)
+        archivos_empresas = generate_simplified_excel(all_processed_data)  # CORREGIDO: usar all_processed_data
         
         if not archivos_empresas:
             logger.error("❌ No se pudieron generar los archivos Excel")
@@ -1494,7 +1511,7 @@ async def test_pdf_processing(
             "processing_details": {
                 "pdf_file": "prueba.pdf",
                 "documents_extracted": len(processed_data),
-                "companies_detected": len(archivos_empresas),
+                "companies_detectadas": len(archivos_empresas),
                 "email_recipient": test_email,
                 "companies": [
                     {
