@@ -53,6 +53,7 @@ urllib3==2.5.0
 uvicorn==0.24.0
 watchfiles==1.1.0
 websockets==15.0.1
+# Pillow actualizado para compatibilidad con Python 3.13
+pillow==10.3.0
 sendgrid==6.12.5
-img2pdf==0.5.0
-pillow==10.0.1
+img2pdf==0.6.1
