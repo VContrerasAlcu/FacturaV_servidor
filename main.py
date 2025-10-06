@@ -428,7 +428,7 @@ async def upload_invoice(
             success=False
         )
 
-# Endpoint para procesar múltiples facturas - CONVERSIÓN MEJORADA DE IMÁGENES
+# Endpoint para procesar múltiples facturas - CONVERSIÓN MEJORADA
 @app.post("/api/upload-invoices", response_model=ProcessResponse)
 async def upload_invoices(
     background_tasks: BackgroundTasks,
@@ -556,9 +556,9 @@ async def upload_invoices(
                     single_files.append(page['file_object'])
                     logger.info(f"🔄 Fallback: página {page['page_number']} del grupo {group_id} enviada individualmente")
         
-        # CONVERTIR ARCHIVOS SIMPLES (IMÁGENES) A PDFs - VERSIÓN MEJORADA
+        # CONVERTIR ARCHIVOS SIMPLES (IMÁGENES) A PDFs - VERSIÓN CORREGIDA
         converted_single_pdfs = []
-        pdf_files = []
+        pdf_files_list = []
         
         for file in single_files:
             try:
@@ -569,7 +569,7 @@ async def upload_invoices(
                 
                 if file_type == 'application/pdf':
                     # Ya es PDF, usar directamente
-                    pdf_files.append({
+                    pdf_files_list.append({
                         'filename': f"SINGLE_{file.filename}",
                         'content': content,
                         'original_name': file.filename,
@@ -578,7 +578,7 @@ async def upload_invoices(
                     })
                     logger.info(f"📄 PDF original: {file.filename}")
                 elif file_type and file_type.startswith('image/'):
-                    # Convertir imagen a PDF - CON MANEJO MEJORADO DE ERRORES
+                    # Convertir imagen a PDF - CON FALLBACK ROBUSTO
                     try:
                         # Resetear el archivo para la conversión
                         file.file = io.BytesIO(content)
@@ -594,19 +594,13 @@ async def upload_invoices(
                             })
                             logger.info(f"✅ Imagen convertida: {file.filename} → PDF ({len(pdf_bytes)} bytes)")
                         else:
-                            logger.warning(f"⚠️ Conversión falló para {file.filename}, usando original")
-                            pdf_files.append({
-                                'filename': file.filename,
-                                'content': content,
-                                'original_name': file.filename,
-                                'type': 'image_fallback',
-                                'size_bytes': len(content)
-                            })
+                            raise Exception("PDF bytes vacíos")
                             
                     except Exception as conv_error:
                         logger.error(f"❌ Error convirtiendo imagen {file.filename}: {conv_error}")
-                        # Fallback: mantener como archivo binario
-                        pdf_files.append({
+                        # FALLBACK MEJORADO: procesar directamente con Azure sin conversión
+                        logger.info(f"🔄 Fallback: procesando {file.filename} directamente como imagen")
+                        pdf_files_list.append({
                             'filename': file.filename,
                             'content': content,
                             'original_name': file.filename,
@@ -615,8 +609,7 @@ async def upload_invoices(
                         })
                 else:
                     logger.warning(f"⚠️ Tipo de archivo no soportado: {file.filename} ({file_type})")
-                    # Tratar como binario genérico
-                    pdf_files.append({
+                    pdf_files_list.append({
                         'filename': file.filename,
                         'content': content,
                         'original_name': file.filename,
@@ -624,12 +617,12 @@ async def upload_invoices(
                         'size_bytes': len(content)
                     })
                 
-                await file.seek(0)
-                
             except Exception as e:
                 logger.error(f"❌ Error procesando archivo simple {file.filename}: {e}")
+            
+            finally:
+                # SIEMPRE resetear el archivo, esté dentro o fuera del try
                 await file.seek(0)
-                continue
         
         # COMBINAR TODOS LOS ARCHIVOS PARA PROCESAMIENTO
         all_files_to_process = []
@@ -667,7 +660,7 @@ async def upload_invoices(
             })
         
         # Agregar PDFs originales
-        for pdf_file in pdf_files:
+        for pdf_file in pdf_files_list:
             temp_upload_file = UploadFile(
                 filename=pdf_file['filename'],
                 file=io.BytesIO(pdf_file['content'])
@@ -684,7 +677,7 @@ async def upload_invoices(
         logger.info(f"📦 Total archivos para procesar con Azure: {len(all_files_to_process)}")
         logger.info(f"   • Multipágina: {len(converted_multipage_pdfs)}")
         logger.info(f"   • Simples convertidos: {len(converted_single_pdfs)}")
-        logger.info(f"   • PDFs originales: {len(pdf_files)}")
+        logger.info(f"   • PDFs originales: {len(pdf_files_list)}")
         
         if not all_files_to_process:
             logger.error("❌ No hay archivos válidos para procesar")
@@ -772,7 +765,7 @@ async def upload_invoices(
 
         # GENERAR ARCHIVOS EXCEL POR EMPRESA
         logger.info(f"📊 Generando Excel para {len(all_processed_data)} elementos procesados...")
-        archivos_empresas = generate_simplified_excel(all_processed_data)  # CORREGIDO: usar all_processed_data
+        archivos_empresas = generate_simplified_excel(all_processed_data)
         
         if not archivos_empresas:
             logger.error("❌ No se pudieron generar los archivos Excel")
@@ -805,7 +798,7 @@ async def upload_invoices(
             })
         
         # Agregar PDFs simples
-        for single_pdf in converted_single_pdfs + pdf_files:
+        for single_pdf in converted_single_pdfs + pdf_files_list:
             files_data.append({
                 'filename': single_pdf['filename'],
                 'content': single_pdf['content'],
@@ -835,7 +828,7 @@ async def upload_invoices(
         
         # PREPARAR MENSAJE DE RESULTADO
         multipage_count = len(converted_multipage_pdfs)
-        single_count = len(converted_single_pdfs) + len(pdf_files)
+        single_count = len(converted_single_pdfs) + len(pdf_files_list)
         
         result_message = f"Procesamiento completado: {processed_count} archivos procesados"
         
@@ -851,7 +844,7 @@ async def upload_invoices(
         if failed_count > 0:
             result_message += f", {failed_count} archivos fallaron"
 
-        # PREPARAR CONTENIDO DEL EMAIL MEJORADO
+        # PREPARAR CONTENIDO DEL EMAIL
         email_subject = f"Facturas procesadas ({processed_count}) - FacturaV"
         
         email_content = f"""
@@ -882,14 +875,6 @@ async def upload_invoices(
             email_content += f"<li><strong>{empresa['empresa']}</strong>: {empresa['cantidad_facturas']} factura(s)</li>"
         
         email_content += f"""
-        </ul>
-        
-        <h4>Contenido del archivo ZIP:</h4>
-        <ul>
-            <li><strong>EXCEL_*.xlsx:</strong> Archivos Excel organizados por empresa</li>
-            <li><strong>MULTIPAGE_*.pdf:</strong> Facturas multipágina convertidas a PDF único</li>
-            <li><strong>CONVERTED_*.pdf:</strong> Imágenes simples convertidas a PDF</li>
-            <li><strong>SINGLE_*.pdf:</strong> PDFs originales subidos</li>
         </ul>
         
         <p>Adjunto encontrará el archivo ZIP con los Excel organizados por empresa Y los archivos procesados.</p>
@@ -928,7 +913,7 @@ async def upload_invoices(
         return ProcessResponse(
             message=f"Error procesando los archivos: {str(e)}",
             success=False
-        )
+        )    
     
 # AGREGAR LA FUNCIÓN AUXILIAR PARA CREAR EL ZIP
 def crear_zip_con_excels_y_pdfs(archivos_empresas, files_data):

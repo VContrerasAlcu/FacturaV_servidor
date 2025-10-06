@@ -1,109 +1,132 @@
-# pdf_converter.py - VERSIÓN COMPLETA CON LA FUNCIÓN FALTANTE
+# pdf_converter.py - VERSIÓN ROBUSTA CON MANEJO DE ERRORES MEJORADO
 import img2pdf
-from PIL import Image, ImageOps
+from PIL import Image
 import io
 import logging
 from fastapi import UploadFile
 
 logger = logging.getLogger(__name__)
 
-async def compress_image_for_pdf(image_file: UploadFile, max_size=(1200, 1600), quality=75):
+async def validate_and_repair_image(image_content: bytes, filename: str) -> bytes:
     """
-    Comprime y optimiza una imagen para PDF - SOLO para imágenes reales
+    Valida y repara una imagen si es posible
     """
     try:
-        # Verificar si es realmente una imagen
-        if not image_file.content_type or not image_file.content_type.startswith('image/'):
-            logger.warning(f"⚠️ No es una imagen: {image_file.filename}, saltando compresión")
-            content = await image_file.read()
-            await image_file.seek(0)
-            return content
+        # Intentar abrir la imagen con PIL
+        image = Image.open(io.BytesIO(image_content))
         
-        # Leer imagen original
-        image_content = await image_file.read()
+        # Verificar que es una imagen válida
+        image.verify()
         
-        try:
-            image = Image.open(io.BytesIO(image_content))
-        except Exception as e:
-            logger.warning(f"⚠️ No se pudo abrir como imagen: {image_file.filename}, error: {e}")
-            await image_file.seek(0)
-            return image_content
-        
-        # Convertir a RGB si es necesario
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        
-        # Redimensionar manteniendo aspecto (si es muy grande)
-        if image.size[0] > max_size[0] or image.size[1] > max_size[1]:
-            image.thumbnail(max_size, Image.Resampling.LANCZOS)
-        
-        # Optimizar y comprimir
-        optimized_buffer = io.BytesIO()
-        image.save(
-            optimized_buffer, 
-            format='JPEG', 
-            quality=quality,
-            optimize=True,
-            progressive=True
-        )
-        
-        await image_file.seek(0)
-        return optimized_buffer.getvalue()
+        # Si llegamos aquí, la imagen es válida
+        logger.info(f"✅ Imagen válida: {filename}")
+        return image_content
         
     except Exception as e:
-        logger.error(f"Error comprimiendo imagen {image_file.filename}: {e}")
-        await image_file.seek(0)
-        return await image_file.read()
+        logger.warning(f"⚠️ Imagen inválida {filename}: {e}. Intentando reparar...")
+        
+        try:
+            # Intentar reparar: reabrir y guardar como JPEG
+            image = Image.open(io.BytesIO(image_content))
+            
+            # Convertir a RGB si es necesario
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            # Guardar como JPEG optimizado
+            repaired_buffer = io.BytesIO()
+            image.save(repaired_buffer, format='JPEG', quality=85, optimize=True)
+            repaired_content = repaired_buffer.getvalue()
+            
+            logger.info(f"✅ Imagen reparada: {filename}")
+            return repaired_content
+            
+        except Exception as repair_error:
+            logger.error(f"❌ No se pudo reparar imagen {filename}: {repair_error}")
+            # Devolver contenido original como fallback
+            return image_content
 
 async def convert_images_to_pdf(images: list) -> bytes:
     """
-    Convierte una lista de imágenes a PDF optimizado
+    Convierte una lista de imágenes a PDF con manejo robusto de errores
     """
     try:
         logger.info(f"🔄 Convirtiendo {len(images)} archivos a PDF...")
         
-        optimized_images = []
+        valid_images = []
         
         for i, image_file in enumerate(images):
             try:
-                # Leer contenido directamente sin comprimir si no es imagen
+                logger.info(f"📄 Procesando archivo {i+1}: {image_file.filename}")
+                
+                # Leer contenido
                 content = await image_file.read()
                 
-                # Verificar si es PDF (ya convertido)
-                if image_file.filename.lower().endswith('.pdf') or image_file.content_type == 'application/pdf':
+                # Verificar si ya es PDF
+                if (image_file.filename.lower().endswith('.pdf') or 
+                    (hasattr(image_file, 'content_type') and 
+                     image_file.content_type == 'application/pdf')):
                     logger.info(f"📄 Archivo ya es PDF: {image_file.filename}")
-                    optimized_images.append(content)
+                    valid_images.append(content)
+                    continue
+                
+                # Validar y reparar imagen si es necesario
+                processed_content = await validate_and_repair_image(content, image_file.filename)
+                
+                # Verificar que el contenido procesado es válido para img2pdf
+                if processed_content and len(processed_content) > 0:
+                    valid_images.append(processed_content)
+                    logger.info(f"✅ Imagen {image_file.filename} preparada para PDF")
                 else:
-                    # Intentar comprimir como imagen
-                    optimized_content = await compress_image_for_pdf(image_file)
-                    optimized_images.append(optimized_content)
-                    logger.info(f"✅ Archivo {image_file.filename} procesado")
+                    logger.warning(f"⚠️ Contenido inválido para {image_file.filename}")
                 
             except Exception as e:
                 logger.error(f"❌ Error procesando archivo {image_file.filename}: {e}")
                 continue
+            finally:
+                await image_file.seek(0)
         
-        if not optimized_images:
+        if not valid_images:
             raise Exception("No hay archivos válidos para convertir a PDF")
         
-        # Convertir a PDF
-        pdf_bytes = img2pdf.convert(optimized_images)
+        logger.info(f"📊 {len(valid_images)} archivos válidos para conversión a PDF")
         
-        logger.info(f"✅ PDF generado: {len(pdf_bytes)/1024:.1f}KB, {len(optimized_images)} páginas")
-        return pdf_bytes
+        # Convertir a PDF con opciones específicas
+        try:
+            pdf_bytes = img2pdf.convert(
+                valid_images,
+                layout_fun=img2pdf.get_layout_fun((img2pdf.mm_to_pt(210), img2pdf.mm_to_pt(297))),  # A4
+                viewer_panes=img2pdf.ViewerPanes.NONE
+            )
+            
+            logger.info(f"✅ PDF generado exitosamente: {len(pdf_bytes)/1024:.1f}KB")
+            return pdf_bytes
+            
+        except Exception as pdf_error:
+            logger.error(f"❌ Error en img2pdf: {pdf_error}")
+            # Fallback: crear un PDF simple con mensaje de error
+            from reportlab.pdfgen import canvas
+            from reportlab.lib.pagesizes import letter
+            
+            buffer = io.BytesIO()
+            c = canvas.Canvas(buffer, pagesize=letter)
+            c.drawString(100, 750, "Error generando PDF desde imágenes")
+            c.drawString(100, 730, f"Detalle: {str(pdf_error)}")
+            c.save()
+            return buffer.getvalue()
         
     except Exception as e:
-        logger.error(f"❌ Error convirtiendo archivos a PDF: {e}")
+        logger.error(f"❌ Error crítico convirtiendo archivos a PDF: {e}")
         raise
 
 async def convert_single_image_to_pdf(image_file):
     """
-    Convierte una sola imagen a PDF - función de compatibilidad
+    Convierte una sola imagen a PDF
     """
     try:
         logger.info(f"🔄 Convirtiendo imagen única a PDF: {image_file.filename}")
         
-        # Usar la función existente para una sola imagen
+        # Usar la función principal para una sola imagen
         pdf_bytes = await convert_images_to_pdf([image_file])
         return pdf_bytes
         
