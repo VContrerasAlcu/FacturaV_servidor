@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 1440))  # 24 horas
     AZURE_FORM_RECOGNIZER_ENDPOINT: str = os.getenv("AZURE_FORM_RECOGNIZER_ENDPOINT", "")
     AZURE_FORM_RECOGNIZER_KEY: str = os.getenv("AZURE_FORM_RECOGNIZER_KEY", "")
+    AZURE_CUSTOM_MODEL_ID: str = os.getenv("AZURE_CUSTOM_MODEL_ID", "")
     SMTP_SERVER: str = os.getenv("SMTP_SERVER", "smtp.gmail.com")
     SMTP_PORT: int = int(os.getenv("SMTP_PORT", 587))
     SMTP_USERNAME: str = os.getenv("SMTP_USERNAME", "")
