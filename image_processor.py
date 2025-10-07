@@ -8,6 +8,73 @@ from datetime import datetime
 # Configurar logging
 logger = logging.getLogger(__name__)
 
+
+# En image_processor.py - MEJORAR EXTRACCIÓN DE IMPUESTOS
+
+def extract_tax_details_improved(invoice):
+    """
+    Extrae detalles de impuestos de forma más robusta
+    """
+    tax_details = []
+    
+    try:
+       
+        # EXTRACCIÓN MEJORADA DE IVA - USANDO LA NUEVA FUNCIÓN
+        tax_details = extract_tax_details_improved(invoice)
+        # 2. SI NO HAY TAXDETAILS, BUSCAR EN CAMPOS ALTERNATIVOS
+        if not tax_details:
+            logger.info("🔍 Buscando impuestos en campos alternativos...")
+            
+            # Buscar TotalTax
+            total_tax = get_field_value(invoice.fields.get('TotalTax'), 0)
+            if total_tax > 0:
+                logger.info(f"  📊 TotalTax encontrado: {total_tax}€")
+                # Intentar inferir la tasa si hay SubTotal
+                subtotal = get_field_value(invoice.fields.get('SubTotal'), 0)
+                if subtotal > 0:
+                    tax_rate = (total_tax / subtotal) * 100
+                    tax_details.append({
+                        'Rate': f"IVA {tax_rate:.1f}%",
+                        'Amount': total_tax
+                    })
+                    logger.info(f"  ✅ Impuesto inferido: {tax_rate:.1f}% - {total_tax}€")
+                else:
+                    tax_details.append({
+                        'Rate': 'IVA',
+                        'Amount': total_tax
+                    })
+            
+            # Buscar VAT (impuesto específico)
+            vat_amount = get_field_value(invoice.fields.get('VAT'), 0)
+            if vat_amount > 0 and vat_amount != total_tax:
+                tax_details.append({
+                    'Rate': 'IVA',
+                    'Amount': vat_amount
+                })
+                logger.info(f"  ✅ VAT encontrado: {vat_amount}€")
+        
+        # 3. SI NO HAY IMPUESTOS EXPLÍCITOS, CALCULAR DESDE TOTAL Y SUBTOTAL
+        if not tax_details:
+            invoice_total = get_field_value(invoice.fields.get('InvoiceTotal'), 0)
+            subtotal = get_field_value(invoice.fields.get('SubTotal'), 0)
+            
+            if invoice_total > 0 and subtotal > 0 and invoice_total != subtotal:
+                calculated_tax = invoice_total - subtotal
+                if calculated_tax > 0:
+                    tax_rate = (calculated_tax / subtotal) * 100
+                    tax_details.append({
+                        'Rate': f"IVA Calculado {tax_rate:.1f}%",
+                        'Amount': calculated_tax
+                    })
+                    logger.info(f"  🧮 Impuesto calculado: {tax_rate:.1f}% - {calculated_tax}€")
+    
+    except Exception as e:
+        logger.error(f"❌ Error en extract_tax_details_improved: {e}")
+    
+    return tax_details
+
+
+
 def get_field_value(field, default_value=None):
     """Extraer valor de un campo de Azure Form Recognizer con valor por defecto"""
     if not field or not field.value:

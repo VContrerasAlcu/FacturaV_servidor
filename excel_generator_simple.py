@@ -79,9 +79,11 @@ def convertir_a_float(valor):
     except (ValueError, TypeError):
         return 0.0
 
+# En excel_generator_simple.py - MEJORAR ESCRITURA DE IMPUESTOS
+
 def generar_excel_empresa_simplificado(empresa_nombre, facturas_empresa):
     """
-    Genera Excel con UNA HOJA POR FACTURA + HOJA RESUMEN - VERSIÓN CORREGIDA
+    Genera Excel con UNA HOJA POR FACTURA + HOJA RESUMEN - MEJORADO
     """
     try:
         workbook = Workbook()
@@ -95,6 +97,7 @@ def generar_excel_empresa_simplificado(empresa_nombre, facturas_empresa):
         header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
         section_font = Font(bold=True, size=11, color="2E74B5")
         total_font = Font(bold=True, size=12, color="2E74B5")
+        warning_font = Font(color="FF0000", italic=True)
         
         thin_border = Border(
             left=Side(style='thin'), 
@@ -146,7 +149,7 @@ def generar_excel_empresa_simplificado(empresa_nombre, facturas_empresa):
             worksheet.append(['Archivo Origen:', factura.get('archivo_origen', 'Desconocido'), '', ''])
             current_row += 3
             
-            # DETALLE DE IMPUESTOS
+            # DETALLE DE IMPUESTOS - SECCIÓN MEJORADA
             taxes_header = worksheet.cell(row=current_row, column=1, value='DETALLE DE IMPUESTOS')
             worksheet.merge_cells(f'A{current_row}:D{current_row}')
             taxes_header.font = header_font
@@ -155,8 +158,8 @@ def generar_excel_empresa_simplificado(empresa_nombre, facturas_empresa):
             current_row += 1
             
             # Encabezados tabla impuestos
-            worksheet.append(['Tipo de IVA', 'Tasa', 'Importe', ''])
-            for col in range(1, 4):
+            worksheet.append(['Tipo de IVA', 'Tasa', 'Importe', 'Notas'])
+            for col in range(1, 5):
                 cell = worksheet.cell(row=current_row, column=col)
                 cell.font = Font(bold=True)
                 cell.fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
@@ -168,32 +171,68 @@ def generar_excel_empresa_simplificado(empresa_nombre, facturas_empresa):
             
             if tax_details:
                 for tax in tax_details:
-                    rate = tax.get('Rate', '0%')
+                    rate = tax.get('Rate', 'No especificado')
                     amount = convertir_a_float(tax.get('Amount', 0))
                     total_impuestos += amount
                     
+                    # Determinar notas según el tipo de tasa
+                    notas = ""
+                    if 'calculado' in str(rate).lower() or 'inferido' in str(rate).lower():
+                        notas = "Calculado automáticamente"
+                    elif rate == 'IVA':
+                        notas = "Detectado como IVA"
+                    
                     worksheet.append([
-                        'IVA',
                         rate,
+                        rate if '%' in str(rate) else 'IVA',
                         amount,
-                        ''
+                        notas
                     ])
                     
-                    # Formato de la fila
-                    for col in range(1, 4):
+                    # Aplicar bordes y formato a la fila
+                    for col in range(1, 5):
                         cell = worksheet.cell(row=current_row, column=col)
                         cell.border = thin_border
+                        cell.font = normal_font
                         if col == 3:  # Columna importe
                             cell.number_format = '#,##0.00€'
+                        if col == 4 and notas:  # Columna notas
+                            cell.font = warning_font
                     
                     current_row += 1
             else:
-                worksheet.append(['No se detectaron impuestos', '', '', ''])
-                for col in range(1, 4):
-                    worksheet.cell(row=current_row, column=col).border = thin_border
+                # SI NO HAY IMPUESTOS DETECTADOS, MOSTRAR MENSAJE
+                worksheet.append(['No se detectaron impuestos', '', '', 'Verificar factura original'])
+                for col in range(1, 5):
+                    cell = worksheet.cell(row=current_row, column=col)
+                    cell.border = thin_border
+                    cell.font = warning_font
                 current_row += 1
+                
+                # INTENTAR CALCULAR IMPUESTOS SI ES POSIBLE
+                invoice_total = convertir_a_float(factura.get('InvoiceTotal', 0))
+                subtotal = convertir_a_float(factura.get('SubTotal', 0))
+                
+                if invoice_total > 0 and subtotal > 0 and invoice_total != subtotal:
+                    calculated_tax = invoice_total - subtotal
+                    if calculated_tax > 0:
+                        tax_rate = (calculated_tax / subtotal) * 100
+                        worksheet.append([
+                            f"IVA Calculado {tax_rate:.1f}%",
+                            f"{tax_rate:.1f}%",
+                            calculated_tax,
+                            "Calculado a partir de Total - SubTotal"
+                        ])
+                        total_impuestos = calculated_tax
+                        for col in range(1, 5):
+                            cell = worksheet.cell(row=current_row, column=col)
+                            cell.border = thin_border
+                            cell.font = warning_font
+                            if col == 3:
+                                cell.number_format = '#,##0.00€'
+                        current_row += 1
             
-            # TOTALES - CORREGIDO: Conversión segura a float
+            # TOTALES
             current_row += 1
             invoice_total = convertir_a_float(factura.get('InvoiceTotal', 0))
             subtotal = invoice_total - total_impuestos
@@ -212,161 +251,26 @@ def generar_excel_empresa_simplificado(empresa_nombre, facturas_empresa):
                         if row_offset == 2:  # Fila de total
                             cell.font = total_font
             
+            current_row += 4
+            
+            # INFORMACIÓN ADICIONAL DE PROCESAMIENTO
+            if factura.get('confidence_level') == 'low' or factura.get('procesamiento') == 'fallback_basico':
+                info_cell = worksheet.cell(row=current_row, column=1, 
+                                         value='ℹ️ INFORMACIÓN: Esta factura fue procesada con datos limitados. Verificar con el documento original.')
+                worksheet.merge_cells(f'A{current_row}:D{current_row}')
+                info_cell.font = warning_font
+                info_cell.fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+            
             # Ajustar anchos de columnas
             worksheet.column_dimensions['A'].width = 25
             worksheet.column_dimensions['B'].width = 20
             worksheet.column_dimensions['C'].width = 15
-            worksheet.column_dimensions['D'].width = 10
+            worksheet.column_dimensions['D'].width = 25
             
             # Congelar paneles
             worksheet.freeze_panes = 'A2'
         
-        # HOJA DE RESUMEN GENERAL
-        resumen_sheet = workbook.create_sheet(title="RESUMEN GENERAL")
-        current_row = 1
-        
-        # TITULO
-        title_cell = resumen_sheet.cell(row=current_row, column=1, 
-                                      value=f'RESUMEN GENERAL - {empresa_nombre.upper()}')
-        resumen_sheet.merge_cells(f'A{current_row}:H{current_row}')
-        title_cell.font = Font(bold=True, size=16, color="2E74B5")
-        title_cell.alignment = Alignment(horizontal='center')
-        current_row += 2
-        
-        # ESTADISTICAS RAPIDAS
-        total_facturas = len(facturas_empresa)
-        total_importe = sum(convertir_a_float(f.get('InvoiceTotal', 0)) for f in facturas_empresa)
-        total_impuestos = sum(sum(convertir_a_float(tax.get('Amount', 0)) for tax in f.get('TaxDetails', [])) for f in facturas_empresa)
-        
-        resumen_sheet.append(['ESTADISTICAS GENERALES:', '', '', '', '', '', '', ''])
-        resumen_sheet.merge_cells(f'A{current_row}:H{current_row}')
-        resumen_sheet.cell(row=current_row, column=1).font = header_font
-        resumen_sheet.cell(row=current_row, column=1).fill = header_fill
-        current_row += 1
-        
-        resumen_sheet.append([
-            'Total Facturas:', total_facturas,
-            'Total Importe:', f'€{total_importe:,.2f}',
-            'Total Impuestos:', f'€{total_impuestos:,.2f}',
-            'Subtotal:', f'€{total_importe - total_impuestos:,.2f}'
-        ])
-        current_row += 2
-        
-        # TABLA RESUMEN DE FACTURAS
-        resumen_sheet.append(['DETALLE POR FACTURA:', '', '', '', '', '', '', ''])
-        resumen_sheet.merge_cells(f'A{current_row}:H{current_row}')
-        resumen_sheet.cell(row=current_row, column=1).font = header_font
-        resumen_sheet.cell(row=current_row, column=1).fill = header_fill
-        current_row += 1
-        
-        headers = ['N Factura', 'Fecha', 'CIF/NIF', 'Subtotal', 'Total IVA', 'TOTAL', 'Tipos IVA', 'Archivo']
-        resumen_sheet.append(headers)
-        
-        # Estilo encabezados
-        for col in range(1, 9):
-            cell = resumen_sheet.cell(row=current_row, column=col)
-            cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill(start_color="5B9BD5", end_color="5B9BD5", fill_type="solid")
-            cell.border = thin_border
-            cell.alignment = Alignment(horizontal='center')
-        current_row += 1
-        
-        # DATOS DE FACTURAS
-        for factura in facturas_empresa:
-            invoice_id = factura.get('InvoiceId', 'Sin numero')
-            invoice_date = formatear_fecha(factura.get('InvoiceDate'))
-            tax_id = factura.get('VendorTaxId', 'No disponible')
-            invoice_total = convertir_a_float(factura.get('InvoiceTotal', 0))
-            
-            # Calcular subtotal e IVA
-            tax_details = factura.get('TaxDetails', [])
-            total_iva = sum(convertir_a_float(tax.get('Amount', 0)) for tax in tax_details)
-            subtotal = invoice_total - total_iva
-            
-            # Tipos de IVA utilizados
-            tipos_iva = ", ".join([tax.get('Rate', 'N/A') for tax in tax_details]) if tax_details else "No IVA"
-            
-            fila = [
-                invoice_id,
-                invoice_date,
-                tax_id,
-                subtotal,
-                total_iva,
-                invoice_total,
-                tipos_iva,
-                factura.get('archivo_origen', 'Desconocido')
-            ]
-            
-            resumen_sheet.append(fila)
-            
-            # Formato de la fila
-            for col in range(1, 9):
-                cell = resumen_sheet.cell(row=current_row, column=col)
-                cell.border = thin_border
-                
-                # Formato numerico para columnas de dinero
-                if col in [4, 5, 6]:
-                    cell.number_format = '#,##0.00€'
-                    cell.alignment = Alignment(horizontal='right')
-            
-            current_row += 1
-        
-        # TOTALES FINALES
-        current_row += 1
-        start_data_row = current_row - len(facturas_empresa) - 1
-        
-        resumen_sheet.append([
-            'TOTALES:', '', '',
-            f'=SUM(D{start_data_row}:D{current_row-1})',
-            f'=SUM(E{start_data_row}:E{current_row-1})', 
-            f'=SUM(F{start_data_row}:F{current_row-1})',
-            '', ''
-        ])
-        
-        # Formato totales
-        for col in range(1, 9):
-            cell = resumen_sheet.cell(row=current_row, column=col)
-            cell.font = total_font
-            cell.border = thin_border
-            if col in [4, 5, 6]:
-                cell.number_format = '#,##0.00€'
-        
-        # RESUMEN DE IVA POR TIPO
-        current_row += 2
-        resumen_iva = calcular_resumen_iva_completo(facturas_empresa)
-        
-        if resumen_iva:
-            resumen_sheet.append(['RESUMEN DE IVA POR TIPO:', '', '', '', '', '', '', ''])
-            resumen_sheet.merge_cells(f'A{current_row}:H{current_row}')
-            resumen_sheet.cell(row=current_row, column=1).font = header_font
-            resumen_sheet.cell(row=current_row, column=1).fill = header_fill
-            current_row += 1
-            
-            resumen_sheet.append(['Tipo de IVA', 'Total Importe', 'N Facturas', '', '', '', '', ''])
-            for col in range(1, 4):
-                cell = resumen_sheet.cell(row=current_row, column=col)
-                cell.font = Font(bold=True)
-                cell.fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
-                cell.border = thin_border
-            current_row += 1
-            
-            for tipo_iva, importe in resumen_iva.items():
-                # Contar facturas con este tipo de IVA
-                num_facturas = sum(1 for f in facturas_empresa 
-                                 if any(tax.get('Rate') == tipo_iva for tax in f.get('TaxDetails', [])))
-                
-                resumen_sheet.append([tipo_iva, importe, num_facturas, '', '', '', '', ''])
-                resumen_sheet.cell(row=current_row, column=2).number_format = '#,##0.00€'
-                current_row += 1
-        
-        # Ajustar anchos de columnas en resumen
-        column_widths = [20, 12, 15, 12, 12, 15, 20, 25]
-        for col_idx, width in enumerate(column_widths, 1):
-            col_letter = chr(64 + col_idx)
-            resumen_sheet.column_dimensions[col_letter].width = width
-        
-        # Congelar paneles
-        resumen_sheet.freeze_panes = 'A3'
+     
         
         # Guardar en memoria
         output = BytesIO()
