@@ -96,6 +96,7 @@ def generar_excel_empresa_simplificado(empresa_nombre, facturas_empresa):
         header_font = Font(bold=True, color="FFFFFF", size=12)
         header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
         section_font = Font(bold=True, size=11, color="2E74B5")
+        normal_font = Font(size=10) 
         total_font = Font(bold=True, size=12, color="2E74B5")
         warning_font = Font(color="FF0000", italic=True)
         
