@@ -1,4 +1,4 @@
-# pdf_converter.py - VERSIÓN CORREGIDA SIN ViewerPanes
+# pdf_converter.py - VERSIÓN FINAL CORREGIDA
 import img2pdf
 from PIL import Image
 import io
@@ -95,37 +95,94 @@ async def convert_images_to_pdf(images: list) -> bytes:
         
         logger.info(f"📊 {len(valid_images)} archivos válidos para conversión a PDF")
         
-        # Convertir a PDF con opciones CORREGIDAS (sin ViewerPanes)
+        # SOLUCIÓN AL ERROR DE ROTACIÓN: Usar rotation=0 explícitamente
         try:
-            pdf_bytes = img2pdf.convert(
-                valid_images,
-                layout_fun=img2pdf.get_layout_fun((img2pdf.mm_to_pt(210), img2pdf.mm_to_pt(297)))  # A4
-            )
-            
-            logger.info(f"✅ PDF generado exitosamente: {len(pdf_bytes)/1024:.1f}KB")
+            # Opción 1: Intentar con rotation=0
+            pdf_bytes = img2pdf.convert(valid_images, rotation=0)
+            logger.info(f"✅ PDF generado exitosamente (con rotation=0): {len(pdf_bytes)/1024:.1f}KB")
             return pdf_bytes
             
         except Exception as pdf_error:
-            logger.error(f"❌ Error en img2pdf: {pdf_error}")
-            # Fallback: crear un PDF simple con mensaje de error
+            logger.warning(f"⚠️ Error con rotation=0: {pdf_error}. Intentando sin parámetros...")
+            
             try:
-                from reportlab.pdfgen import canvas
-                from reportlab.lib.pagesizes import letter
+                # Opción 2: Intentar sin parámetros de rotación
+                pdf_bytes = img2pdf.convert(valid_images)
+                logger.info(f"✅ PDF generado exitosamente (sin parámetros): {len(pdf_bytes)/1024:.1f}KB")
+                return pdf_bytes
                 
-                buffer = io.BytesIO()
-                c = canvas.Canvas(buffer, pagesize=letter)
-                c.drawString(100, 750, "FacturaV - Documento procesado")
-                c.drawString(100, 730, f"Archivo: {images[0].filename if images else 'Desconocido'}")
-                c.drawString(100, 710, "Nota: Error en conversión de imagen, procesado directamente por Azure")
-                c.save()
-                pdf_fallback = buffer.getvalue()
-                logger.info(f"✅ PDF fallback generado: {len(pdf_fallback)} bytes")
-                return pdf_fallback
-            except Exception as fallback_error:
-                logger.error(f"❌ Error incluso en fallback: {fallback_error}")
-                # Último fallback: PDF mínimo
-                minimal_pdf = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\nxref\n0 1\n0000000000 65535 f \ntrailer\n<<>>\nstartxref\n0\n%%EOF"
-                return minimal_pdf
+            except Exception as pdf_error2:
+                logger.warning(f"⚠️ Error sin parámetros: {pdf_error2}. Intentando con layout simple...")
+                
+                try:
+                    # Opción 3: Intentar con layout_fun simple
+                    pdf_bytes = img2pdf.convert(
+                        valid_images,
+                        layout_fun=lambda x: (img2pdf.mm_to_pt(210), img2pdf.mm_to_pt(297))
+                    )
+                    logger.info(f"✅ PDF generado con layout simple: {len(pdf_bytes)/1024:.1f}KB")
+                    return pdf_bytes
+                    
+                except Exception as pdf_error3:
+                    logger.error(f"❌ Todos los métodos de img2pdf fallaron: {pdf_error3}")
+                    
+                    # FALLBACK: Crear PDF con reportlab que contiene las imágenes
+                    try:
+                        from reportlab.pdfgen import canvas
+                        from reportlab.lib.pagesizes import letter, A4
+                        from reportlab.lib.utils import ImageReader
+                        
+                        buffer = io.BytesIO()
+                        c = canvas.Canvas(buffer, pagesize=A4)
+                        
+                        # Agregar cada imagen como una página en el PDF
+                        for i, img_content in enumerate(valid_images):
+                            if i > 0:  # Nueva página para cada imagen después de la primera
+                                c.showPage()
+                            
+                            try:
+                                # Crear ImageReader desde el contenido de la imagen
+                                img_reader = ImageReader(io.BytesIO(img_content))
+                                
+                                # Obtener dimensiones de la imagen
+                                img_width, img_height = img_reader.getSize()
+                                
+                                # Escalar la imagen para que quepa en la página A4
+                                page_width, page_height = A4
+                                margin = 50
+                                available_width = page_width - (2 * margin)
+                                available_height = page_height - (2 * margin)
+                                
+                                # Calcular escala manteniendo proporciones
+                                scale_x = available_width / img_width
+                                scale_y = available_height / img_height
+                                scale = min(scale_x, scale_y, 1.0)  # No escalar más de 100%
+                                
+                                new_width = img_width * scale
+                                new_height = img_height * scale
+                                
+                                # Centrar la imagen en la página
+                                x = (page_width - new_width) / 2
+                                y = (page_height - new_height) / 2
+                                
+                                # Dibujar la imagen
+                                c.drawImage(img_reader, x, y, new_width, new_height)
+                                c.drawString(margin, margin, f"Página {i+1} - FacturaV")
+                                
+                            except Exception as img_error:
+                                logger.error(f"❌ Error procesando imagen {i+1} en fallback: {img_error}")
+                                c.drawString(margin, page_height - margin, f"Error procesando imagen {i+1}")
+                        
+                        c.save()
+                        pdf_fallback = buffer.getvalue()
+                        logger.info(f"✅ PDF fallback con reportlab generado: {len(pdf_fallback)} bytes")
+                        return pdf_fallback
+                        
+                    except Exception as fallback_error:
+                        logger.error(f"❌ Error incluso en fallback reportlab: {fallback_error}")
+                        # Último fallback: PDF mínimo pero válido
+                        minimal_pdf = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\nxref\n0 1\n0000000000 65535 f \ntrailer\n<<>>\nstartxref\n0\n%%EOF"
+                        return minimal_pdf
         
     except Exception as e:
         logger.error(f"❌ Error crítico convirtiendo archivos a PDF: {e}")
