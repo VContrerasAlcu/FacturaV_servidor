@@ -1,4 +1,4 @@
-# excel_generator_simple.py
+# excel_generator_simple.py - VERSIÓN COMPLETAMENTE CORREGIDA
 import pandas as pd
 from io import BytesIO
 from openpyxl import Workbook
@@ -8,9 +8,49 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+# FUNCIÓN AUXILIAR PARA CONVERSIÓN SEGURA DE NÚMEROS
+def safe_float_convert(value, default=0):
+    """
+    Convierte seguro un valor a float, manejando strings con símbolos de moneda
+    """
+    if value is None:
+        return default
+    
+    if isinstance(value, (int, float)):
+        return float(value)
+    
+    if isinstance(value, str):
+        # Limpiar string: remover €, $, espacios y convertir , a .
+        cleaned = value.replace('€', '').replace('$', '').replace(' ', '').replace(',', '.').strip()
+        try:
+            return float(cleaned)
+        except (ValueError, TypeError):
+            return default
+    
+    return default
+
+def calcular_resumen_iva_completo(facturas_empresa):
+    """Calcula resumen completo de IVA por tipo CON MANEJO DE TIPOS SEGURO"""
+    resumen_iva = {}
+    
+    for factura in facturas_empresa:
+        tax_details = factura.get('TaxDetails', [])
+        for tax in tax_details:
+            tipo_iva = tax.get('Rate', '0%')
+            importe = tax.get('Amount', 0)
+            
+            # ✅ CONVERTIR importe a float de forma segura
+            importe_float = safe_float_convert(importe, 0)
+            
+            if tipo_iva not in resumen_iva:
+                resumen_iva[tipo_iva] = 0
+            resumen_iva[tipo_iva] += importe_float  # ✅ Ahora ambos son números
+    
+    return resumen_iva
+
 def generate_simplified_excel(processed_data_list):
     """
-    Genera Excel simplificado SOLO con campos esenciales
+    Genera Excel simplificado SOLO con campos esenciales - VERSIÓN CORREGIDA
     """
     try:
         logger.info(f"Generando Excel simplificado para {len(processed_data_list)} elementos")
@@ -44,9 +84,9 @@ def generate_simplified_excel(processed_data_list):
             excel_data = generar_excel_empresa_simplificado(empresa_nombre, facturas_empresa)
             
             if excel_data:
-                # Calcular resumen
+                # Calcular resumen CON CONVERSIÓN SEGURA
                 total_facturas = len(facturas_empresa)
-                total_importe = sum(factura.get('InvoiceTotal', 0) for factura in facturas_empresa)
+                total_importe = sum(safe_float_convert(factura.get('InvoiceTotal', 0)) for factura in facturas_empresa)
                 resumen_iva = calcular_resumen_iva_completo(facturas_empresa)
                 
                 archivos_empresas.append({
@@ -66,7 +106,7 @@ def generate_simplified_excel(processed_data_list):
 
 def generar_excel_empresa_simplificado(empresa_nombre, facturas_empresa):
     """
-    Genera Excel con UNA HOJA POR FACTURA + HOJA RESUMEN - VERSIÓN CORREGIDA
+    Genera Excel con UNA HOJA POR FACTURA + HOJA RESUMEN - VERSIÓN COMPLETAMENTE CORREGIDA
     """
     try:
         workbook = Workbook()
@@ -88,25 +128,6 @@ def generar_excel_empresa_simplificado(empresa_nombre, facturas_empresa):
             bottom=Side(style='thin')
         )
         
-        # FUNCIÓN AUXILIAR PARA CONVERSIÓN SEGURA DE NÚMEROS
-        def safe_float_convert(value, default=0):
-            """Convierte seguro un valor a float, manejando strings con símbolos de moneda"""
-            if value is None:
-                return default
-            
-            if isinstance(value, (int, float)):
-                return float(value)
-            
-            if isinstance(value, str):
-                # Limpiar string: remover €, $, espacios y convertir , a .
-                cleaned = value.replace('€', '').replace('$', '').replace(' ', '').replace(',', '.')
-                try:
-                    return float(cleaned)
-                except (ValueError, TypeError):
-                    return default
-            
-            return default
-
         # CREAR UNA HOJA POR CADA FACTURA
         for factura_idx, factura in enumerate(facturas_empresa):
             sheet_name = f"Factura_{factura_idx + 1}"
@@ -394,27 +415,6 @@ def generar_excel_empresa_simplificado(empresa_nombre, facturas_empresa):
     except Exception as e:
         logger.error(f"Error generando Excel para {empresa_nombre}: {e}")
         return None
-    
-
-def safe_float_convert(value, default=0):
-    """
-    Convierte seguro un valor a float, manejando strings con símbolos de moneda
-    """
-    if value is None:
-        return default
-    
-    if isinstance(value, (int, float)):
-        return float(value)
-    
-    if isinstance(value, str):
-        # Limpiar string: remover €, $, espacios y convertir , a .
-        cleaned = value.replace('€', '').replace('$', '').replace(' ', '').replace(',', '.')
-        try:
-            return float(cleaned)
-        except (ValueError, TypeError):
-            return default
-    
-    return default
 
 def formatear_fecha(fecha):
     """Formatea fecha para Excel"""
@@ -432,36 +432,3 @@ def formatear_fecha(fecha):
         return str(fecha)
     except:
         return str(fecha)
-
-def calcular_resumen_iva_completo(facturas_empresa):
-    """Calcula resumen completo de IVA por tipo CON MANEJO DE TIPOS SEGURO"""
-    resumen_iva = {}
-    
-    # Función auxiliar para conversión segura
-    def safe_float_convert(value, default=0):
-        if value is None:
-            return default
-        if isinstance(value, (int, float)):
-            return float(value)
-        if isinstance(value, str):
-            cleaned = value.replace('€', '').replace('$', '').replace(' ', '').replace(',', '.')
-            try:
-                return float(cleaned)
-            except (ValueError, TypeError):
-                return default
-        return default
-    
-    for factura in facturas_empresa:
-        tax_details = factura.get('TaxDetails', [])
-        for tax in tax_details:
-            tipo_iva = tax.get('Rate', '0%')
-            importe = tax.get('Amount', 0)
-            
-            # ✅ CONVERTIR importe a float de forma segura
-            importe_float = safe_float_convert(importe, 0)
-            
-            if tipo_iva not in resumen_iva:
-                resumen_iva[tipo_iva] = 0
-            resumen_iva[tipo_iva] += importe_float
-    
-    return resumen_iva
