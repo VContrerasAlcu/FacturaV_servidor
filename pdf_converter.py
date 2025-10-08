@@ -7,14 +7,35 @@ from fastapi import UploadFile
 
 logger = logging.getLogger(__name__)
 
+# REEMPLAZAR la función compress_image_for_pdf
 async def compress_image_for_pdf(image_file: UploadFile, max_size=(1200, 1600), quality=75):
     """
-    Comprime y optimiza una imagen para PDF
+    Comprime y optimiza una imagen para PDF - VERSIÓN CORREGIDA
     """
     try:
-        # Leer imagen original
+        # ✅ LEER EL CONTENIDO PRIMERO Y CREAR BytesIO NUEVO
         image_content = await image_file.read()
-        image = Image.open(io.BytesIO(image_content))
+        
+        # Verificar que es una imagen válida
+        if not image_content:
+            raise ValueError("Contenido de imagen vacío")
+        
+        # ✅ CREAR NUEVO BytesIO con el contenido
+        image_buffer = io.BytesIO(image_content)
+        
+        try:
+            image = Image.open(image_buffer)
+            
+            # Verificar que es una imagen válida
+            image.verify()  # Verificar integridad
+        except Exception as e:
+            logger.error(f"❌ Imagen inválida {image_file.filename}: {e}")
+            # Devolver contenido original como fallback
+            return image_content
+        
+        # ✅ REABRIR LA IMAGEN después de verify()
+        image_buffer.seek(0)
+        image = Image.open(image_buffer)
         
         # Convertir a RGB si es necesario
         if image.mode != 'RGB':
@@ -34,11 +55,14 @@ async def compress_image_for_pdf(image_file: UploadFile, max_size=(1200, 1600), 
             progressive=True
         )
         
+        # ✅ RESETEAR EL ARCHIVO ORIGINAL
         await image_file.seek(0)
+        
         return optimized_buffer.getvalue()
         
     except Exception as e:
-        logger.error(f"Error comprimiendo imagen: {e}")
+        logger.error(f"❌ Error comprimiendo imagen {image_file.filename}: {e}")
+        # Fallback: devolver contenido original
         await image_file.seek(0)
         return await image_file.read()
 
