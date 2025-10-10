@@ -9,50 +9,42 @@ logger = logging.getLogger(__name__)
 
 async def validate_and_repair_image(image_content: bytes, filename: str) -> bytes:
     """
-    Valida y repara una imagen si es posible
+    Comprime y optimiza una imagen para PDF - VERSIÓN CORREGIDA
     """
     try:
-        # Intentar abrir la imagen con PIL
+        # Leer imagen original
+        image_content = await image_file.read()
         image = Image.open(io.BytesIO(image_content))
         
-        # Verificar que es una imagen válida
-        image.verify()
+        # Convertir a RGB si es necesario
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
         
-        # Si llegamos aquí, la imagen es válida
-        logger.info(f"✅ Imagen válida: {filename}")
-        return image_content
+        # Redimensionar manteniendo aspecto (si es muy grande)
+        if image.size[0] > max_size[0] or image.size[1] > max_size[1]:
+            image.thumbnail(max_size, Image.Resampling.LANCZOS)
+        
+        # Optimizar y comprimir
+        optimized_buffer = io.BytesIO()
+        image.save(
+            optimized_buffer, 
+            format='JPEG', 
+            quality=quality,
+            optimize=True,
+            progressive=True
+        )
+        
+        await image_file.seek(0)
+        return optimized_buffer.getvalue()
         
     except Exception as e:
-        logger.warning(f"⚠️ Imagen inválida {filename}: {e}. Intentando reparar...")
-        
-        try:
-            # Intentar reparar: reabrir y guardar como JPEG
-            image = Image.open(io.BytesIO(image_content))
-            
-            # Convertir a RGB si es necesario
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
-            
-            # Redimensionar si es muy grande (máximo 2000px en el lado más largo)
-            max_size = (2000, 2000)
-            image.thumbnail(max_size, Image.Resampling.LANCZOS)
-            
-            # Guardar como JPEG optimizado
-            repaired_buffer = io.BytesIO()
-            image.save(repaired_buffer, format='JPEG', quality=85, optimize=True)
-            repaired_content = repaired_buffer.getvalue()
-            
-            logger.info(f"✅ Imagen reparada: {filename} ({len(repaired_content)} bytes)")
-            return repaired_content
-            
-        except Exception as repair_error:
-            logger.error(f"❌ No se pudo reparar imagen {filename}: {repair_error}")
-            # Devolver contenido original como fallback
-            return image_content
+        logger.error(f"Error comprimiendo imagen: {e}")
+        await image_file.seek(0)
+        return await image_file.read()
 
 async def convert_images_to_pdf(images: list) -> bytes:
     """
-    Convierte una lista de imágenes a PDF con manejo robusto de errores
+    Convierte una lista de imágenes a PDF optimizado
     """
     try:
         logger.info(f"🔄 Convirtiendo {len(images)} archivos a PDF...")

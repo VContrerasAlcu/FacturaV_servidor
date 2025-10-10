@@ -687,7 +687,7 @@ async def upload_invoices(
             )
         
         # PROCESAR TODOS LOS ARCHIVOS CON AZURE
-        all_processed_data = []
+        all_processed_data = []  # ✅ ESTA VARIABLE ACUMULA TODOS LOS DATOS
         processed_count = 0
         failed_count = 0
         processing_details = []
@@ -733,7 +733,8 @@ async def upload_invoices(
                         elif data_item.get('procesamiento') == 'fallback_basico':
                             fallback_count += 1
                     
-                    all_processed_data.extend(processed_data)
+                    # ✅ AQUÍ ESTÁ EL ERROR - DEBEMOS EXTENDER, NO REEMPLAZAR
+                    all_processed_data.extend(processed_data)  # ✅ CORRECTO: agregar a la lista acumulativa
                     processed_count += 1
                     
                     confidence_levels = [item.get('confidence_level', 'unknown') for item in processed_data]
@@ -763,10 +764,12 @@ async def upload_invoices(
                 processing_details.append(f"✗ {original_name}: error - {error_msg}")
                 logger.error(f"❌ Error procesando {original_name}: {e}")
 
-        # GENERAR ARCHIVOS EXCEL POR EMPRESA
-        logger.info(f"📊 Generando Excel para {len(all_processed_data)} elementos procesados...")
-        archivos_empresas = generate_simplified_excel(all_processed_data)
-        
+        # ✅ GENERAR ARCHIVOS EXCEL CON TODOS LOS DATOS PROCESADOS
+        logger.info("🔍 DEBUG: Datos que se enviarán a generate_simplified_excel:")
+        for i, data in enumerate(all_processed_data):
+            logger.info(f"   📄 Elemento {i+1}: {data.get('VendorName', 'No nombre')} - {data.get('InvoiceId', 'No ID')} - {data.get('archivo_origen', 'No archivo')}")
+        archivos_empresas = generate_simplified_excel(all_processed_data)  # ✅ Usar all_processed_data
+
         if not archivos_empresas:
             logger.error("❌ No se pudieron generar los archivos Excel")
             return ProcessResponse(
@@ -774,16 +777,16 @@ async def upload_invoices(
                 success=False,
                 details=processing_details
             )
-        
+
         # VERIFICAR LOS EXCEL GENERADOS
         total_empresas = len(archivos_empresas)
         total_facturas = sum(empresa['cantidad_facturas'] for empresa in archivos_empresas)
-        
+
         logger.info(f"✅ Se generaron {total_empresas} archivos Excel para {total_facturas} facturas")
-        
+
         for i, empresa in enumerate(archivos_empresas):
             logger.info(f"   📊 Empresa {i+1}: {empresa['empresa']} - {empresa['cantidad_facturas']} facturas")
-        
+                
         # PREPARAR ARCHIVOS PARA EL ZIP
         files_data = []
         
