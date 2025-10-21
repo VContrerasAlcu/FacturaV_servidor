@@ -37,6 +37,8 @@ from contextlib import asynccontextmanager
 from pdf_optimizer import PDFOptimizer
 from custom_processor import CustomModelProcessor
 from excel_generator_simple import generate_simplified_excel
+from auth import verify_google_token, create_or_get_user_from_google
+from models import GoogleAuthRequest
 
 pdf_optimizer = PDFOptimizer()
 custom_processor = CustomModelProcessor()
@@ -1526,6 +1528,65 @@ async def test_pdf_processing(
             "success": False,
             "message": f"Error procesando PDF de prueba: {str(e)}"
         }
+
+@app.post("/api/auth/google")
+async def google_auth(google_data: GoogleAuthRequest):
+    """
+    Autenticación con Google
+    """
+    try:
+        logger.info("🔐 Iniciando autenticación Google")
+        
+        # Verificar token con Google
+        google_user = await verify_google_token(google_data.token)
+        
+        if not google_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token de Google inválido"
+            )
+        
+        # Crear o obtener usuario
+        user = create_or_get_user_from_google(google_user)
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Error creando usuario desde Google"
+            )
+        
+        # Crear token JWT
+        access_token = create_access_token(data={"sub": user['email']})
+        
+        logger.info(f"✅ Login Google exitoso: {user['email']}")
+        return {
+            "access_token": access_token, 
+            "token_type": "bearer",
+            "user": {
+                "email": user['email'],
+                "nombre": user.get('nombre'),
+                "is_google_user": True
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error en autenticación Google: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno en autenticación Google"
+        )
+
+@app.get("/api/auth/google/config")
+async def get_google_config():
+    """
+    Devuelve configuración de Google para el frontend
+    """
+    return {
+        "client_id": settings.GOOGLE_CLIENT_ID,
+        "redirect_uri": settings.GOOGLE_REDIRECT_URI
+    }
 
 if __name__ == "__main__":
     import uvicorn

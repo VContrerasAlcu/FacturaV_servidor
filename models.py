@@ -53,3 +53,12 @@ class ProcessResponse(BaseModel):
     total_elements: Optional[int] = None
     empresas_procesadas: Optional[int] = None
     facturas_totales: Optional[int] = None
+
+class GoogleAuthRequest(BaseModel):
+    token: str
+
+class GoogleUserInfo(BaseModel):
+    email: str
+    name: Optional[str] = None
+    picture: Optional[str] = None
+    sub: str  # Google user ID

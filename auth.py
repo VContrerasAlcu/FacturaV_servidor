@@ -10,6 +10,8 @@ import logging
 from config import settings
 from database import get_user_by_email
 from models import TokenData
+import httpx
+from config import settings
 
 # Configurar logging
 logger = logging.getLogger(__name__)
@@ -90,3 +92,57 @@ def remove_verification_code(email: str):
     if email in verification_codes:
         del verification_codes[email]
         logger.info(f"Código eliminado para: {email}")
+
+
+async def verify_google_token(token: str) -> dict:
+    """
+    Verifica el token de Google y obtiene la información del usuario
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            # Verificar token con Google
+            response = await client.get(
+                f"https://www.googleapis.com/oauth2/v3/tokeninfo?id_token={token}"
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"Error verificando token Google: {response.text}")
+                return None
+            
+            user_info = response.json()
+            
+            # Validar audiencia (nuestro client ID)
+            if user_info.get('aud') != settings.GOOGLE_CLIENT_ID:
+                logger.error("Token Google: Client ID no coincide")
+                return None
+            
+            return user_info
+            
+    except Exception as e:
+        logger.error(f"Error verificando token Google: {e}")
+        return None
+
+def create_or_get_user_from_google(google_user: dict):
+    """
+    Crea o obtiene usuario basado en información de Google
+    """
+    email = google_user.get('email')
+    if not email:
+        return None
+    
+    # Buscar usuario existente
+    user = get_user_by_email(email)
+    
+    if user:
+        # Usuario existe, actualizar información si es necesario
+        return user
+    else:
+        # Crear nuevo usuario
+        user_data = {
+            'email': email,
+            'nombre': google_user.get('name', ''),
+            'password': hash_password(f"google_auth_{google_user.get('sub')}"),  # Password dummy
+            'activo': True
+        }
+        save_user(user_data)
+        return get_user_by_email(email)
