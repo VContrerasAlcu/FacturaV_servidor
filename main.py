@@ -1636,7 +1636,7 @@ async def test_google_config():
         }
 
 @app.get("/api/auth/google/callback")
-async def google_auth_callback(code: str = Form(...)):
+async def google_auth_callback(code: str):
     """
     Maneja el callback de Google con el código de autorización
     """
