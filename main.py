@@ -1738,6 +1738,64 @@ async def get_google_config():
         "redirect_uri": settings.GOOGLE_REDIRECT_URI
     }
 
+@app.post("/api/auth/google")
+async def google_auth(google_request: GoogleAuthRequest):
+    """
+    Recibe el token de Google desde el cliente y crea sesión
+    """
+    try:
+        logger.info("🔐 Procesando token Google desde cliente...")
+        
+        # Verificar el token con Google
+        user_info = await verify_google_token(google_request.token)
+        
+        if not user_info:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token de Google inválido"
+            )
+        
+        email = user_info.get('email')
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No se pudo obtener el email de Google"
+            )
+        
+        # Buscar o crear usuario
+        user = get_user_by_email(email)
+        if not user:
+            user_data = {
+                'email': email,
+                'nombre': user_info.get('name', ''),
+                'password': hash_password(f"google_auth_{user_info.get('sub')}"),
+                'activo': True
+            }
+            save_user(user_data)
+            user = get_user_by_email(email)
+        
+        # Crear token JWT
+        access_token = create_access_token(data={"sub": user['email']})
+        
+        logger.info(f"✅ Login Google exitoso: {user['email']}")
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "email": user['email'],
+                "nombre": user.get('nombre')
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error en autenticación Google: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno en autenticación Google"
+        )
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
