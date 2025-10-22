@@ -1611,6 +1611,30 @@ async def get_google_auth_url():
             "traceback": traceback.format_exc()
         }
 
+@app.get("/api/auth/google/test")
+async def test_google_config():
+    """
+    Endpoint simple para testear la configuración
+    """
+    try:
+        has_client_id = bool(settings.GOOGLE_CLIENT_ID)
+        has_client_secret = bool(settings.GOOGLE_CLIENT_SECRET)
+        has_redirect = bool(settings.GOOGLE_REDIRECT_URI)
+        
+        return {
+            "status": "success" if has_client_id and has_client_secret else "error",
+            "client_id_configured": has_client_id,
+            "client_secret_configured": has_client_secret, 
+            "redirect_uri_configured": has_redirect,
+            "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+            "message": "✅ Configuración correcta" if has_client_id and has_client_secret else "❌ Faltan variables de entorno"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Error: {str(e)}"
+        }
+
 @app.post("/api/auth/google/callback")
 async def google_auth_callback(code: str = Form(...)):
     """
