@@ -39,6 +39,9 @@ from custom_processor import CustomModelProcessor
 from excel_generator_simple import generate_simplified_excel
 from auth import verify_google_token, create_or_get_user_from_google
 from models import GoogleAuthRequest
+from urllib.parse import urlencode
+import httpx
+import logging
 
 pdf_optimizer = PDFOptimizer()
 custom_processor = CustomModelProcessor()
@@ -1535,6 +1538,38 @@ async def get_google_auth_url():
     Genera la URL de autenticación de Google para el frontend
     """
     try:
+        logger.info("🔗 Iniciando generación de URL Google")
+        
+        # Verificar configuración con logging detallado
+        logger.info(f"📋 Verificando configuración Google:")
+        logger.info(f"   - GOOGLE_CLIENT_ID: {'✅ Configurado' if settings.GOOGLE_CLIENT_ID else '❌ No configurado'}")
+        logger.info(f"   - GOOGLE_CLIENT_SECRET: {'✅ Configurado' if settings.GOOGLE_CLIENT_SECRET else '❌ No configurado'}")
+        logger.info(f"   - GOOGLE_REDIRECT_URI: {settings.GOOGLE_REDIRECT_URI}")
+        
+        if not settings.GOOGLE_CLIENT_ID:
+            logger.error("❌ GOOGLE_CLIENT_ID no configurado")
+            return {
+                "success": False,
+                "error": "Google OAuth no configurado",
+                "detail": "La variable GOOGLE_CLIENT_ID no está configurada en el servidor"
+            }
+        
+        if not settings.GOOGLE_CLIENT_SECRET:
+            logger.error("❌ GOOGLE_CLIENT_SECRET no configurado")
+            return {
+                "success": False, 
+                "error": "Google OAuth no configurado",
+                "detail": "La variable GOOGLE_CLIENT_SECRET no está configurada en el servidor"
+            }
+        
+        if not settings.GOOGLE_REDIRECT_URI:
+            logger.error("❌ GOOGLE_REDIRECT_URI no configurado")
+            return {
+                "success": False,
+                "error": "Google OAuth no configurado", 
+                "detail": "La variable GOOGLE_REDIRECT_URI no está configurada en el servidor"
+            }
+        
         # Parámetros para OAuth de Google
         auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
         params = {
@@ -1543,22 +1578,38 @@ async def get_google_auth_url():
             "response_type": "code",
             "scope": "openid email profile",
             "access_type": "offline",
-            "prompt": "consent"
+            "prompt": "consent",
+            "state": "facturav_app"
         }
         
         # Construir URL
-        from urllib.parse import urlencode
         url = f"{auth_url}?{urlencode(params)}"
         
-        logger.info("🔗 URL de Google generada")
-        return {"auth_url": url}
+        logger.info(f"✅ URL de Google generada correctamente")
+        logger.info(f"🔗 URL: {url}")
+        
+        return {
+            "success": True,
+            "auth_url": url,
+            "message": "URL de autenticación generada correctamente",
+            "config": {
+                "client_id_configured": True,
+                "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+                "client_id_preview": settings.GOOGLE_CLIENT_ID[:10] + "..."
+            }
+        }
         
     except Exception as e:
-        logger.error(f"❌ Error generando URL Google: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error generando URL de autenticación"
-        )
+        logger.error(f"❌ Error crítico generando URL Google: {str(e)}")
+        import traceback
+        logger.error(f"📋 Traceback completo: {traceback.format_exc()}")
+        
+        return {
+            "success": False,
+            "error": "Error interno del servidor",
+            "detail": f"Error generando URL: {str(e)}",
+            "traceback": traceback.format_exc()
+        }
 
 @app.post("/api/auth/google/callback")
 async def google_auth_callback(code: str = Form(...)):
