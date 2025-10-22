@@ -1529,38 +1529,113 @@ async def test_pdf_processing(
             "message": f"Error procesando PDF de prueba: {str(e)}"
         }
 
-@app.post("/api/auth/google")
-async def google_auth(google_data: GoogleAuthRequest):
+@app.get("/api/auth/google/url")
+async def get_google_auth_url():
     """
-    Autenticación con Google
+    Genera la URL de autenticación de Google para el frontend
     """
     try:
-        logger.info("🔐 Iniciando autenticación Google")
+        # Parámetros para OAuth de Google
+        auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
+        params = {
+            "client_id": settings.GOOGLE_CLIENT_ID,
+            "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+            "response_type": "code",
+            "scope": "openid email profile",
+            "access_type": "offline",
+            "prompt": "consent"
+        }
         
-        # Verificar token con Google
-        google_user = await verify_google_token(google_data.token)
+        # Construir URL
+        from urllib.parse import urlencode
+        url = f"{auth_url}?{urlencode(params)}"
         
-        if not google_user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token de Google inválido"
+        logger.info("🔗 URL de Google generada")
+        return {"auth_url": url}
+        
+    except Exception as e:
+        logger.error(f"❌ Error generando URL Google: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error generando URL de autenticación"
+        )
+
+@app.post("/api/auth/google/callback")
+async def google_auth_callback(code: str = Form(...)):
+    """
+    Maneja el callback de Google con el código de autorización
+    """
+    try:
+        logger.info("🔄 Procesando callback de Google")
+        
+        # Intercambiar código por token
+        token_url = "https://oauth2.googleapis.com/token"
+        data = {
+            "client_id": settings.GOOGLE_CLIENT_ID,
+            "client_secret": settings.GOOGLE_CLIENT_SECRET,
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": settings.GOOGLE_REDIRECT_URI
+        }
+        
+        async with httpx.AsyncClient() as client:
+            # Obtener access token
+            token_response = await client.post(token_url, data=data)
+            if token_response.status_code != 200:
+                logger.error(f"Error intercambiando código: {token_response.text}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Error intercambiando código por token"
+                )
+            
+            token_data = token_response.json()
+            access_token = token_data.get('access_token')
+            
+            if not access_token:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No se pudo obtener access token"
+                )
+            
+            # Obtener información del usuario
+            userinfo_response = await client.get(
+                "https://www.googleapis.com/oauth2/v3/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"}
             )
+            
+            if userinfo_response.status_code != 200:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Error obteniendo información del usuario"
+                )
+            
+            user_info = userinfo_response.json()
+            email = user_info.get('email')
+            
+            if not email:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No se pudo obtener email de Google"
+                )
         
-        # Crear o obtener usuario
-        user = create_or_get_user_from_google(google_user)
-        
+        # Buscar o crear usuario (usa tu lógica existente)
+        user = get_user_by_email(email)
         if not user:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Error creando usuario desde Google"
-            )
+            user_data = {
+                'email': email,
+                'nombre': user_info.get('name', ''),
+                'password': hash_password(f"google_auth_{user_info.get('sub')}"),
+                'activo': True
+            }
+            save_user(user_data)
+            user = get_user_by_email(email)
         
         # Crear token JWT
-        access_token = create_access_token(data={"sub": user['email']})
+        access_token_jwt = create_access_token(data={"sub": user['email']})
         
         logger.info(f"✅ Login Google exitoso: {user['email']}")
         return {
-            "access_token": access_token, 
+            "access_token": access_token_jwt, 
             "token_type": "bearer",
             "user": {
                 "email": user['email'],
@@ -1572,7 +1647,7 @@ async def google_auth(google_data: GoogleAuthRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error en autenticación Google: {e}")
+        logger.error(f"❌ Error en callback Google: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error interno en autenticación Google"
