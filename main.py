@@ -299,15 +299,26 @@ async def verify_code(verification_request: VerificationRequest):
             detail="Error interno del servidor"
         )
 
+# En main.py - BUSCAR Y CORREGIR el endpoint forgot-password:
+
 @app.post("/api/forgot-password")
-async def forgot_password(email: str, background_tasks: BackgroundTasks):
+async def forgot_password(
+    background_tasks: BackgroundTasks,
+    request_data: dict = Body(...)  # ✅ CAMBIAR: recibir como JSON body
+):
     try:
+        email = request_data.get('email')
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email es requerido"
+            )
+        
         user = get_user_by_email(email)
         if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Usuario no encontrado"
-            )
+            # Por seguridad, no revelar si el email existe o no
+            logger.info(f"Solicitud de recuperación para email no registrado: {email}")
+            return {"message": "Si el email existe, se ha enviado un código de verificación"}
         
         # Generar código de verificación
         code = generate_verification_code()
@@ -321,14 +332,16 @@ async def forgot_password(email: str, background_tasks: BackgroundTasks):
         # Enviar código por email (en background)
         background_tasks.add_task(send_verification_code, email, code)
         
-        return {"message": "Código de verificación enviado"}
+        logger.info(f"Código de recuperación generado para: {email}")
+        return {"message": "Si el email existe, se ha enviado un código de verificación"}
+        
     except Exception as e:
         logger.error(f"Error en forgot-password: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error interno del servidor"
         )
-
+    
 @app.post("/api/reset-password")
 async def reset_password(password_request: PasswordResetRequest):
     try:
