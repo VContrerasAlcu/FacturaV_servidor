@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, BackgroundTasks, Form
+# En main.py - AGREGAR Body a las importaciones
+from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, BackgroundTasks, Form, Body 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from typing import List, Optional
@@ -304,7 +305,7 @@ async def verify_code(verification_request: VerificationRequest):
 @app.post("/api/forgot-password")
 async def forgot_password(
     background_tasks: BackgroundTasks,
-    request_data: dict = Body(...)  # ✅ Recibir como JSON
+    request_data: dict = Body(...)  # ✅ Body ahora está importado
 ):
     """
     Endpoint para solicitar recuperación de contraseña
