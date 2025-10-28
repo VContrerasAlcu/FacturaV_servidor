@@ -1419,8 +1419,8 @@ async def test_with_verified_email():
             subject='TEST con Email Verificado',
             html_content='<h1>Test con email verificado</h1>'
         )
-        
-        sg = SendGridAPIClient("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")
+        sendgrid_api_key = settings.SENDGRID_API_KEY
+        sg = SendGridAPIClient(sendgrid_api_key)
         response = sg.send(message)
         
         return {"status": response.status_code, "success": response.status_code == 202}
