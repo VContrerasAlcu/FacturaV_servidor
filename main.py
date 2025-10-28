@@ -304,39 +304,83 @@ async def verify_code(verification_request: VerificationRequest):
 @app.post("/api/forgot-password")
 async def forgot_password(
     background_tasks: BackgroundTasks,
-    request_data: dict = Body(...)  # ✅ CAMBIAR: recibir como JSON body
+    request_data: dict = Body(...)  # ✅ Recibir como JSON
 ):
+    """
+    Endpoint para solicitar recuperación de contraseña
+    """
     try:
-        email = request_data.get('email')
-        if not email:
+        logger.info(f"📧 Recibida solicitud de recuperación de contraseña")
+        
+        # Validar que viene el email en el request
+        if not request_data or 'email' not in request_data:
+            logger.error("❌ No se recibió email en la solicitud")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email es requerido"
             )
         
+        email = request_data['email']
+        logger.info(f"📧 Procesando recuperación para: {email}")
+        
+        # Validar formato de email
+        import re
+        if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+            logger.error(f"❌ Formato de email inválido: {email}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Formato de email inválido"
+            )
+        
+        # Buscar usuario (por seguridad, no revelar si existe o no)
         user = get_user_by_email(email)
         if not user:
-            # Por seguridad, no revelar si el email existe o no
-            logger.info(f"Solicitud de recuperación para email no registrado: {email}")
-            return {"message": "Si el email existe, se ha enviado un código de verificación"}
+            logger.info(f"⚠️ Solicitud de recuperación para email no registrado: {email}")
+            # Por seguridad, devolver mismo mensaje que si existiera
+            return {
+                "message": "Si el email existe en nuestro sistema, recibirás un código de verificación",
+                "success": True
+            }
+        
+        # Verificar que el usuario esté activo
+        if not user.get('activo', True):
+            logger.warning(f"❌ Usuario inactivo intentó recuperación: {email}")
+            return {
+                "message": "Si el email existe en nuestro sistema, recibirás un código de verificación",
+                "success": True
+            }
         
         # Generar código de verificación
         code = generate_verification_code()
         store_verification_code(
             email, 
             code, 
-            None,
+            None,  # No user_data para password reset
             "password_reset"
         )
         
+        logger.info(f"✅ Código de recuperación generado para: {email} - Código: {code}")
+        
         # Enviar código por email (en background)
-        background_tasks.add_task(send_verification_code, email, code)
+        email_sent = send_verification_code(email, code)
         
-        logger.info(f"Código de recuperación generado para: {email}")
-        return {"message": "Si el email existe, se ha enviado un código de verificación"}
+        if email_sent:
+            logger.info(f"✅ Email de recuperación enviado a: {email}")
+            return {
+                "message": "Se ha enviado un código de verificación a tu email",
+                "success": True
+            }
+        else:
+            logger.error(f"❌ Error enviando email a: {email}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Error enviando código de verificación"
+            )
         
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error en forgot-password: {e}")
+        logger.error(f"💥 Error inesperado en forgot-password: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error interno del servidor"
@@ -344,27 +388,48 @@ async def forgot_password(
     
 @app.post("/api/reset-password")
 async def reset_password(password_request: PasswordResetRequest):
+    """
+    Endpoint para resetear la contraseña con código de verificación
+    """
     try:
+        logger.info(f"🔄 Procesando reset de contraseña para: {password_request.email}")
+        
+        # Validar código de verificación
         if not validate_verification_code(password_request.email, password_request.code):
+            logger.warning(f"❌ Código inválido para: {password_request.email}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Código inválido o expirado"
             )
         
+        # Buscar usuario
+        user = get_user_by_email(password_request.email)
+        if not user:
+            logger.error(f"❌ Usuario no encontrado en reset: {password_request.email}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuario no encontrado"
+            )
+        
         # Actualizar contraseña
         hashed_password = hash_password(password_request.new_password)
-        user = get_user_by_email(password_request.email)
-        
-        if user:
-            user['password'] = hashed_password
-            save_user(user)
+        user['password'] = hashed_password
+        save_user(user)
         
         # Eliminar código de verificación
         remove_verification_code(password_request.email)
         
-        return {"message": "Contraseña actualizada correctamente"}
+        logger.info(f"✅ Contraseña actualizada para: {password_request.email}")
+        
+        return {
+            "message": "Contraseña actualizada correctamente",
+            "success": True
+        }
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error en reset-password: {e}")
+        logger.error(f"💥 Error inesperado en reset-password: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error interno del servidor"
