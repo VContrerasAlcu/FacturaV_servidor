@@ -8,26 +8,27 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# FUNCIÓN AUXILIAR PARA CONVERSIÓN SEGURA DE NÚMEROS
-def safe_float_convert(value, default=0):
-    """
-    Convierte seguro un valor a float, manejando strings con símbolos de moneda
-    """
-    if value is None:
-        return default
-    
-    if isinstance(value, (int, float)):
-        return float(value)
-    
-    if isinstance(value, str):
-        # Limpiar string: remover €, $, espacios y convertir , a .
-        cleaned = value.replace('€', '').replace('$', '').replace(' ', '').replace(',', '.').strip()
-        try:
-            return float(cleaned)
-        except (ValueError, TypeError):
-            return default
-    
-    return default
+# FUNCIÓN AUXILIAR PARA CONVERSIÓN SEGURA DE NÚMEROS - MEJORADA
+def convertir_a_float(valor):
+    """Convierte cualquier valor a float de forma segura"""
+    try:
+        if valor is None:
+            return 0.0
+        if isinstance(valor, (int, float)):
+            return float(valor)
+        if isinstance(valor, str):
+            # Limpiar string: remover €, $, espacios y convertir , a .
+            cleaned = valor.replace('€', '').replace('$', '').replace(' ', '').replace(',', '.').strip()
+            # Remover puntos de miles (1.234,56 -> 1234.56)
+            if '.' in cleaned and cleaned.rfind('.') < len(cleaned) - 3:
+                cleaned = cleaned.replace('.', '')
+            try:
+                return float(cleaned)
+            except (ValueError, TypeError):
+                return 0.0
+        return float(valor)
+    except (ValueError, TypeError):
+        return 0.0
 
 def calcular_resumen_iva_completo(facturas_empresa):
     """Calcula resumen completo de IVA por tipo CON MANEJO DE TIPOS SEGURO"""
@@ -40,11 +41,11 @@ def calcular_resumen_iva_completo(facturas_empresa):
             importe = tax.get('Amount', 0)
             
             # ✅ CONVERTIR importe a float de forma segura
-            importe_float = safe_float_convert(importe, 0)
+            importe_float = convertir_a_float(importe)
             
             if tipo_iva not in resumen_iva:
                 resumen_iva[tipo_iva] = 0
-            resumen_iva[tipo_iva] += importe_float  # ✅ Ahora ambos son números
+            resumen_iva[tipo_iva] += importe_float
     
     return resumen_iva
 
@@ -86,7 +87,7 @@ def generate_simplified_excel(processed_data_list):
             if excel_data:
                 # Calcular resumen CON CONVERSIÓN SEGURA
                 total_facturas = len(facturas_empresa)
-                total_importe = sum(factura.get('InvoiceTotal', 0) for factura in facturas_empresa)
+                total_importe = sum(convertir_a_float(factura.get('InvoiceTotal', 0)) for factura in facturas_empresa)
                 resumen_iva = calcular_resumen_iva_completo(facturas_empresa)
                 
                 archivos_empresas.append({
@@ -104,26 +105,9 @@ def generate_simplified_excel(processed_data_list):
         logger.error(f"❌ Error generando Excel simplificado: {e}")
         return []
 
-def convertir_a_float(valor):
-    """Convierte cualquier valor a float de forma segura"""
-    try:
-        if valor is None:
-            return 0.0
-        if isinstance(valor, (int, float)):
-            return float(valor)
-        if isinstance(valor, str):
-            # Limpiar string: quitar puntos de miles, comas decimales, símbolos de moneda
-            valor_limpio = valor.replace('.', '').replace(',', '.').replace('€', '').replace('$', '').strip()
-            return float(valor_limpio) if valor_limpio else 0.0
-        return float(valor)
-    except (ValueError, TypeError):
-        return 0.0
-
-# En excel_generator_simple.py - MEJORAR ESCRITURA DE IMPUESTOS
-
 def generar_excel_empresa_simplificado(empresa_nombre, facturas_empresa):
     """
-    Genera Excel con UNA HOJA POR FACTURA + HOJA RESUMEN
+    Genera Excel con UNA HOJA POR FACTURA + HOJA RESUMEN - VERSIÓN COMPLETAMENTE CORREGIDA
     """
     try:
         workbook = Workbook()
@@ -208,12 +192,12 @@ def generar_excel_empresa_simplificado(empresa_nombre, facturas_empresa):
             current_row += 1
 
             tax_details = factura.get('TaxDetails', [])
-            total_impuestos = 0
+            total_impuestos = 0.0  # ✅ INICIALIZAR COMO FLOAT
             
             if tax_details:
                 for tax in tax_details:
                     rate = tax.get('Rate', '0%')
-                    amount = tax.get('Amount', 0)
+                    amount = convertir_a_float(tax.get('Amount', 0))  # ✅ CONVERTIR A FLOAT
                     total_impuestos += amount
                     
                     worksheet.append([
@@ -237,24 +221,36 @@ def generar_excel_empresa_simplificado(empresa_nombre, facturas_empresa):
                     worksheet.cell(row=current_row, column=col).border = thin_border
                 current_row += 1
             
-            # TOTALES
+            # ✅ CORREGIDO: TOTALES CON CONVERSIÓN SEGURA
             current_row += 1
-            invoice_total = factura.get('InvoiceTotal', 0)
+            invoice_total_float = convertir_a_float(factura.get('InvoiceTotal', 0))  # ✅ CONVERTIR A FLOAT
             
-            worksheet.append(['SUBTOTAL (sin impuestos):', '', invoice_total - total_impuestos, ''])
+            # Calcular subtotal
+            subtotal = invoice_total_float - total_impuestos  # ✅ AHORA AMBOS SON FLOATS
+            
+            worksheet.append(['SUBTOTAL (sin impuestos):', '', subtotal, ''])
+            subtotal_cell = worksheet.cell(row=current_row, column=3)
+            subtotal_cell.number_format = '#,##0.00€'
+            current_row += 1
+            
             worksheet.append(['TOTAL IMPUESTOS:', '', total_impuestos, ''])
+            impuestos_cell = worksheet.cell(row=current_row, column=3)
+            impuestos_cell.number_format = '#,##0.00€'
+            current_row += 1
+            
             worksheet.append(['TOTAL FACTURA:', '', invoice_total_float, ''])
+            total_cell = worksheet.cell(row=current_row, column=3)
+            total_cell.number_format = '#,##0.00€'
+            total_cell.font = total_font
 
             # Formato totales
             for row_offset in range(3):
                 for col in range(1, 4):
-                    cell = worksheet.cell(row=current_row + row_offset, column=col)
+                    cell = worksheet.cell(row=current_row - 2 + row_offset, column=col)
                     cell.border = thin_border
-                    if col == 3:  # Columna importe
-                        cell.number_format = '#,##0.00€'
-                        if row_offset == 2:  # Fila de total
-                            cell.font = total_font
             
+            current_row += 2
+
             # Ajustar anchos de columnas
             worksheet.column_dimensions['A'].width = 25
             worksheet.column_dimensions['B'].width = 20
@@ -278,8 +274,8 @@ def generar_excel_empresa_simplificado(empresa_nombre, facturas_empresa):
         
         # ESTADISTICAS RAPIDAS
         total_facturas = len(facturas_empresa)
-        total_importe = sum(f.get('InvoiceTotal', 0) for f in facturas_empresa)
-        total_impuestos = sum(sum(tax.get('Amount', 0) for tax in f.get('TaxDetails', [])) for f in facturas_empresa)
+        total_importe = sum(convertir_a_float(f.get('InvoiceTotal', 0)) for f in facturas_empresa)  # ✅ CONVERTIR
+        total_impuestos = sum(sum(convertir_a_float(tax.get('Amount', 0)) for tax in f.get('TaxDetails', [])) for f in facturas_empresa)  # ✅ CONVERTIR
         
         resumen_sheet.append(['ESTADISTICAS GENERALES:', '', '', '', '', '', '', ''])
         resumen_sheet.merge_cells(f'A{current_row}:H{current_row}')
@@ -289,10 +285,15 @@ def generar_excel_empresa_simplificado(empresa_nombre, facturas_empresa):
         
         resumen_sheet.append([
             'Total Facturas:', total_facturas,
-            'Total Importe:', f'€{total_importe:,.2f}',
-            'Total Impuestos:', f'€{total_impuestos:,.2f}',
-            'Subtotal:', f'€{total_importe - total_impuestos:,.2f}'
+            'Total Importe:', total_importe,
+            'Total Impuestos:', total_impuestos,
+            'Subtotal:', total_importe - total_impuestos
         ])
+        
+        # Formato números en resumen
+        for col in [4, 6, 8]:  # Columnas de importes
+            resumen_sheet.cell(row=current_row, column=col).number_format = '#,##0.00€'
+        
         current_row += 2
         
         # TABLA RESUMEN DE FACTURAS
@@ -319,12 +320,12 @@ def generar_excel_empresa_simplificado(empresa_nombre, facturas_empresa):
             invoice_id = factura.get('InvoiceId', 'Sin numero')
             invoice_date = formatear_fecha(factura.get('InvoiceDate'))
             tax_id = factura.get('VendorTaxId', 'No disponible')
-            invoice_total = factura.get('InvoiceTotal', 0)
+            invoice_total = convertir_a_float(factura.get('InvoiceTotal', 0))  # ✅ CONVERTIR
             
             # Calcular subtotal e IVA
             tax_details = factura.get('TaxDetails', [])
-            total_iva = sum(tax.get('Amount', 0) for tax in tax_details)
-            subtotal = invoice_total - total_iva
+            total_iva = sum(convertir_a_float(tax.get('Amount', 0)) for tax in tax_details)  # ✅ CONVERTIR
+            subtotal = invoice_total - total_iva  # ✅ AHORA AMBOS SON FLOATS
             
             # Tipos de IVA utilizados
             tipos_iva = ", ".join([tax.get('Rate', 'N/A') for tax in tax_details]) if tax_details else "No IVA"
@@ -416,7 +417,7 @@ def generar_excel_empresa_simplificado(empresa_nombre, facturas_empresa):
         workbook.save(output)
         output.seek(0)
         
-        logger.info(f"Excel simplificado generado para {empresa_nombre}")
+        logger.info(f"✅ Excel generado para {empresa_nombre}: {len(facturas_empresa)} facturas")
         return output.getvalue()
 
     except Exception as e:
@@ -439,19 +440,3 @@ def formatear_fecha(fecha):
         return str(fecha)
     except:
         return str(fecha)
-
-def calcular_resumen_iva_completo(facturas_empresa):
-    """Calcula resumen completo de IVA por tipo"""
-    resumen_iva = {}
-    
-    for factura in facturas_empresa:
-        tax_details = factura.get('TaxDetails', [])
-        for tax in tax_details:
-            tipo_iva = tax.get('Rate', '0%')
-            importe = tax.get('Amount', 0)
-            
-            if tipo_iva not in resumen_iva:
-                resumen_iva[tipo_iva] = 0
-            resumen_iva[tipo_iva] += importe
-    
-    return resumen_iva
