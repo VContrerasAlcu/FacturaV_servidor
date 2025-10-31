@@ -9,7 +9,7 @@ from datetime import datetime
 from PIL import Image
 import logging
 import zipfile
-from pdf_converter import convert_images_to_pdf_optimized,convert_single_image_to_pdf_optimized
+from pdf_converter import convert_images_to_pdf_optimized, convert_single_image_to_pdf_optimized
 import os
 import json
 from config import settings
@@ -38,7 +38,7 @@ from contextlib import asynccontextmanager
 from pdf_optimizer import PDFOptimizer
 from custom_processor import CustomModelProcessor
 from excel_generator_simple import generate_simplified_excel
-
+from image_compressor import compress_image_for_pdf, optimize_image_for_ocr
 
 from urllib.parse import urlencode
 import httpx
