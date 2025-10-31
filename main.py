@@ -9,7 +9,7 @@ from datetime import datetime
 from PIL import Image
 import logging
 import zipfile
-from pdf_converter import convert_images_to_pdf, convert_single_image_to_pdf
+from pdf_converter import convert_images_to_pdf_optimized,convert_single_image_to_pdf_optimized
 import os
 import json
 from config import settings
@@ -614,7 +614,7 @@ async def upload_invoices(
                     files_for_conversion.append(temp_file)
                 
                 # Convertir el grupo completo a un solo PDF
-                pdf_bytes = await pdf_optimizer.create_optimized_pdf(files_for_conversion)
+                pdf_bytes = await convert_images_to_pdf_optimized(files_for_conversion, max_size_per_page_kb=300)
                 
                 original_name = pages[0]['original_name']
                 pdf_filename = f"MULTIPAGE_{original_name}.pdf"
@@ -666,7 +666,7 @@ async def upload_invoices(
                     try:
                         # Resetear el archivo para la conversión
                         file.file = io.BytesIO(content)
-                        pdf_bytes = await convert_single_image_to_pdf(file)
+                        pdf_bytes = await convert_single_image_to_pdf_optimized(file, max_size_kb=300)
                         
                         if pdf_bytes:
                             converted_single_pdfs.append({
@@ -1414,7 +1414,7 @@ async def test_with_verified_email():
         
         # Usar un dominio verificado en SendGrid
         message = Mail(
-            from_email='vcapost23@gmail.com',  # Cambia esto
+            from_email='vcapost23@gmail.com', 
             to_emails='vcontrerasalcu@gmail.com',
             subject='TEST con Email Verificado',
             html_content='<h1>Test con email verificado</h1>'

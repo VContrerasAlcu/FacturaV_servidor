@@ -1,198 +1,138 @@
-# pdf_converter.py - VERSIÓN FINAL CORREGIDA
-import img2pdf
-from PIL import Image
+# image_compressor.py - VERSIÓN MEJORADA
 import io
-import logging
+from PIL import Image, ImageFilter
 from fastapi import UploadFile
+import logging
 
 logger = logging.getLogger(__name__)
 
-async def validate_and_repair_image(image_content: bytes, filename: str) -> bytes:
+async def compress_image_for_pdf(file: UploadFile, target_size_kb: int = 500) -> UploadFile:
     """
-    Comprime y optimiza una imagen para PDF - VERSIÓN CORREGIDA
+    Comprime imágenes optimizadas para PDF - VERSIÓN MEJORADA
     """
     try:
-        # Leer imagen original
-        image_content = await image_file.read()
-        image = Image.open(io.BytesIO(image_content))
+        # Leer el contenido del archivo
+        content = await file.read()
+        original_size_kb = len(content) / 1024
         
-        # Convertir a RGB si es necesario
-        if image.mode != 'RGB':
+        # Si ya es pequeño, no comprimir
+        if original_size_kb <= target_size_kb:
+            logger.info(f"✅ Imagen ya optimizada: {file.filename} ({original_size_kb:.1f}KB)")
+            await file.seek(0)
+            return file
+        
+        logger.info(f"🔄 Comprimiendo {file.filename} de {original_size_kb:.1f}KB a ~{target_size_kb}KB")
+        
+        # Abrir imagen con PIL
+        image = Image.open(io.BytesIO(content))
+        
+        # ✅ CONVERTIR A RGB (importante para JPEG)
+        if image.mode in ('RGBA', 'P', 'LA'):
             image = image.convert('RGB')
         
-        # Redimensionar manteniendo aspecto (si es muy grande)
-        if image.size[0] > max_size[0] or image.size[1] > max_size[1]:
-            image.thumbnail(max_size, Image.Resampling.LANCZOS)
+        # ✅ CALCULAR NUEVO TAMAÑO MÁXIMO
+        max_dimension = 1600  # Reducir dimensión máxima
+        if max(image.size) > max_dimension:
+            ratio = max_dimension / max(image.size)
+            new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
+            image = image.resize(new_size, Image.Resampling.LANCZOS)
+            logger.info(f"   📐 Redimensionada: {image.size} -> {new_size}")
         
-        # Optimizar y comprimir
-        optimized_buffer = io.BytesIO()
-        image.save(
-            optimized_buffer, 
-            format='JPEG', 
-            quality=quality,
-            optimize=True,
-            progressive=True
+        # ✅ COMPRESIÓN INTELIGENTE
+        # Calcular calidad basada en el tamaño objetivo
+        original_size_mb = original_size_kb / 1024
+        target_size_mb = target_size_kb / 1024
+        
+        # Calcular calidad inicial (más agresiva)
+        initial_quality = max(30, int(70 * (target_size_mb / original_size_mb)))
+        
+        # Probar diferentes niveles de compresión
+        qualities_to_try = [initial_quality, initial_quality - 10, initial_quality - 20]
+        qualities_to_try = [q for q in qualities_to_try if q >= 20]  # Mínimo 20% de calidad
+        
+        compressed_content = None
+        final_quality = initial_quality
+        
+        for quality in qualities_to_try:
+            output = io.BytesIO()
+            image.save(
+                output, 
+                format='JPEG', 
+                quality=quality,
+                optimize=True,
+                progressive=True  # ✅ MEJOR COMPRESIÓN
+            )
+            
+            temp_content = output.getvalue()
+            temp_size_kb = len(temp_content) / 1024
+            
+            logger.info(f"   🧪 Probando calidad {quality}% -> {temp_size_kb:.1f}KB")
+            
+            if temp_size_kb <= target_size_kb * 1.2:  # Permitir 20% más del objetivo
+                compressed_content = temp_content
+                final_quality = quality
+                break
+        
+        # Si ninguna calidad alcanzó el objetivo, usar la más pequeña
+        if compressed_content is None:
+            output = io.BytesIO()
+            image.save(output, format='JPEG', quality=20, optimize=True)
+            compressed_content = output.getvalue()
+            final_quality = 20
+        
+        compressed_size_kb = len(compressed_content) / 1024
+        compression_ratio = (original_size_kb - compressed_size_kb) / original_size_kb * 100
+        
+        logger.info(f"✅ Imagen comprimida: {compressed_size_kb:.1f}KB (calidad: {final_quality}%, reducción: {compression_ratio:.1f}%)")
+        
+        # Crear nuevo UploadFile
+        compressed_file = UploadFile(
+            filename=f"compressed_{file.filename}",
+            file=io.BytesIO(compressed_content),
+            content_type='image/jpeg'
         )
         
-        await image_file.seek(0)
-        return optimized_buffer.getvalue()
+        return compressed_file
         
     except Exception as e:
-        logger.error(f"Error comprimiendo imagen: {e}")
-        await image_file.seek(0)
-        return await image_file.read()
+        logger.error(f"❌ Error comprimiendo imagen {file.filename}: {e}")
+        # En caso de error, devolver el archivo original
+        await file.seek(0)
+        return file
 
-async def convert_images_to_pdf(images: list) -> bytes:
+async def optimize_image_for_ocr(file: UploadFile) -> UploadFile:
     """
-    Convierte una lista de imágenes a PDF optimizado
+    Optimiza imagen específicamente para OCR (mejor legibilidad)
     """
     try:
-        logger.info(f"🔄 Convirtiendo {len(images)} archivos a PDF...")
+        content = await file.read()
+        image = Image.open(io.BytesIO(content))
         
-        valid_images = []
+        # Convertir a escala de grises para OCR (mejor rendimiento)
+        if image.mode != 'L':
+            image = image.convert('L')
         
-        for i, image_file in enumerate(images):
-            try:
-                logger.info(f"📄 Procesando archivo {i+1}: {image_file.filename}")
-                
-                # Leer contenido
-                content = await image_file.read()
-                
-                # Verificar si ya es PDF
-                if (image_file.filename.lower().endswith('.pdf') or 
-                    (hasattr(image_file, 'content_type') and 
-                     image_file.content_type == 'application/pdf')):
-                    logger.info(f"📄 Archivo ya es PDF: {image_file.filename}")
-                    valid_images.append(content)
-                    continue
-                
-                # Validar y reparar imagen si es necesario
-                processed_content = await validate_and_repair_image(content, image_file.filename)
-                
-                # Verificar que el contenido procesado es válido para img2pdf
-                if processed_content and len(processed_content) > 0:
-                    valid_images.append(processed_content)
-                    logger.info(f"✅ Imagen {image_file.filename} preparada para PDF")
-                else:
-                    logger.warning(f"⚠️ Contenido inválido para {image_file.filename}")
-                
-            except Exception as e:
-                logger.error(f"❌ Error procesando archivo {image_file.filename}: {e}")
-                continue
-            finally:
-                await image_file.seek(0)
+        # Mejorar contraste suavemente
+        from PIL import ImageEnhance
+        enhancer = ImageEnhance.Contrast(image)
+        image = enhancer.enhance(1.2)  # Aumentar contraste 20%
         
-        if not valid_images:
-            raise Exception("No hay archivos válidos para convertir a PDF")
+        # Reducir ruido
+        image = image.filter(ImageFilter.SMOOTH)
         
-        logger.info(f"📊 {len(valid_images)} archivos válidos para conversión a PDF")
+        output = io.BytesIO()
+        image.save(output, format='JPEG', quality=85, optimize=True)
         
-        # SOLUCIÓN AL ERROR DE ROTACIÓN: Usar rotation=0 explícitamente
-        try:
-            # Opción 1: Intentar con rotation=0
-            pdf_bytes = img2pdf.convert(valid_images, rotation=0)
-            logger.info(f"✅ PDF generado exitosamente (con rotation=0): {len(pdf_bytes)/1024:.1f}KB")
-            return pdf_bytes
-            
-        except Exception as pdf_error:
-            logger.warning(f"⚠️ Error con rotation=0: {pdf_error}. Intentando sin parámetros...")
-            
-            try:
-                # Opción 2: Intentar sin parámetros de rotación
-                pdf_bytes = img2pdf.convert(valid_images)
-                logger.info(f"✅ PDF generado exitosamente (sin parámetros): {len(pdf_bytes)/1024:.1f}KB")
-                return pdf_bytes
-                
-            except Exception as pdf_error2:
-                logger.warning(f"⚠️ Error sin parámetros: {pdf_error2}. Intentando con layout simple...")
-                
-                try:
-                    # Opción 3: Intentar con layout_fun simple
-                    pdf_bytes = img2pdf.convert(
-                        valid_images,
-                        layout_fun=lambda x: (img2pdf.mm_to_pt(210), img2pdf.mm_to_pt(297))
-                    )
-                    logger.info(f"✅ PDF generado con layout simple: {len(pdf_bytes)/1024:.1f}KB")
-                    return pdf_bytes
-                    
-                except Exception as pdf_error3:
-                    logger.error(f"❌ Todos los métodos de img2pdf fallaron: {pdf_error3}")
-                    
-                    # FALLBACK: Crear PDF con reportlab que contiene las imágenes
-                    try:
-                        from reportlab.pdfgen import canvas
-                        from reportlab.lib.pagesizes import letter, A4
-                        from reportlab.lib.utils import ImageReader
-                        
-                        buffer = io.BytesIO()
-                        c = canvas.Canvas(buffer, pagesize=A4)
-                        
-                        # Agregar cada imagen como una página en el PDF
-                        for i, img_content in enumerate(valid_images):
-                            if i > 0:  # Nueva página para cada imagen después de la primera
-                                c.showPage()
-                            
-                            try:
-                                # Crear ImageReader desde el contenido de la imagen
-                                img_reader = ImageReader(io.BytesIO(img_content))
-                                
-                                # Obtener dimensiones de la imagen
-                                img_width, img_height = img_reader.getSize()
-                                
-                                # Escalar la imagen para que quepa en la página A4
-                                page_width, page_height = A4
-                                margin = 50
-                                available_width = page_width - (2 * margin)
-                                available_height = page_height - (2 * margin)
-                                
-                                # Calcular escala manteniendo proporciones
-                                scale_x = available_width / img_width
-                                scale_y = available_height / img_height
-                                scale = min(scale_x, scale_y, 1.0)  # No escalar más de 100%
-                                
-                                new_width = img_width * scale
-                                new_height = img_height * scale
-                                
-                                # Centrar la imagen en la página
-                                x = (page_width - new_width) / 2
-                                y = (page_height - new_height) / 2
-                                
-                                # Dibujar la imagen
-                                c.drawImage(img_reader, x, y, new_width, new_height)
-                                c.drawString(margin, margin, f"Página {i+1} - FacturaV")
-                                
-                            except Exception as img_error:
-                                logger.error(f"❌ Error procesando imagen {i+1} en fallback: {img_error}")
-                                c.drawString(margin, page_height - margin, f"Error procesando imagen {i+1}")
-                        
-                        c.save()
-                        pdf_fallback = buffer.getvalue()
-                        logger.info(f"✅ PDF fallback con reportlab generado: {len(pdf_fallback)} bytes")
-                        return pdf_fallback
-                        
-                    except Exception as fallback_error:
-                        logger.error(f"❌ Error incluso en fallback reportlab: {fallback_error}")
-                        # Último fallback: PDF mínimo pero válido
-                        minimal_pdf = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\nxref\n0 1\n0000000000 65535 f \ntrailer\n<<>>\nstartxref\n0\n%%EOF"
-                        return minimal_pdf
+        optimized_file = UploadFile(
+            filename=f"ocr_optimized_{file.filename}",
+            file=io.BytesIO(output.getvalue()),
+            content_type='image/jpeg'
+        )
+        
+        logger.info(f"✅ Imagen optimizada para OCR: {file.filename}")
+        return optimized_file
         
     except Exception as e:
-        logger.error(f"❌ Error crítico convirtiendo archivos a PDF: {e}")
-        # Fallback final
-        minimal_pdf = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\nxref\n0 1\n0000000000 65535 f \ntrailer\n<<>>\nstartxref\n0\n%%EOF"
-        return minimal_pdf
-
-async def convert_single_image_to_pdf(image_file):
-    """
-    Convierte una sola imagen a PDF
-    """
-    try:
-        logger.info(f"🔄 Convirtiendo imagen única a PDF: {image_file.filename}")
-        
-        # Usar la función principal para una sola imagen
-        pdf_bytes = await convert_images_to_pdf([image_file])
-        return pdf_bytes
-        
-    except Exception as e:
-        logger.error(f"❌ Error convirtiendo imagen única a PDF: {e}")
-        raise
+        logger.error(f"Error optimizando para OCR: {e}")
+        await file.seek(0)
+        return file
