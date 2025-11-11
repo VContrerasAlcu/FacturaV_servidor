@@ -36,7 +36,8 @@ from image_processor import process_image
 from excel_generator import generate_excel, generate_single_excel
 from contextlib import asynccontextmanager
 from pdf_optimizer import PDFOptimizer
-from custom_processor import CustomModelProcessor
+# from custom_processor import CustomModelProcessor
+from custom_processor import PrebuiltModelProcessor
 from excel_generator_simple import generate_simplified_excel
 from image_compressor import compress_image_for_pdf, optimize_image_for_ocr
 
@@ -45,7 +46,8 @@ import httpx
 import logging
 
 pdf_optimizer = PDFOptimizer()
-custom_processor = CustomModelProcessor()
+#custom_processor = CustomModelProcessor()
+prebuilt_processor = PrebuiltModelProcessor()
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -793,7 +795,8 @@ async def upload_invoices(
                     logger.info(f"   📚 Factura multipágina: {original_name} ({page_count} páginas)")
                 
                 # PROCESAR CON AZURE DOCUMENT INTELLIGENCE
-                processed_data = await custom_processor.process_document(file)
+                #processed_data = await custom_processor.process_document(file)
+                processed_data = await prebuilt_processor.process_document(file)
                 
                 if processed_data and len(processed_data) > 0:
                     for data_item in processed_data:
